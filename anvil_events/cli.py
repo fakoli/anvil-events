@@ -9,6 +9,8 @@ Usage:
   anvil-events replay [--lines N]
   anvil-events verify <dir-or-file>    # causal-consistency cycle check
   anvil-events gc [--archive-days 90]
+  anvil-events sync-repo --dir DIR --correlation C [--push]   # commit+push operator repo, emit config.adopted+repo.synced
+  anvil-events ingest [--root R] [--store S] [--count N]      # validated fact ingestion (drop forged)
 """
 import argparse
 import json
@@ -16,6 +18,8 @@ import os
 import sys
 
 from .daemon import main as daemon_main
+from .ingest import cmd_ingest, cmd_sync_repo
+from .ingest import register as register_m4
 from .nats_mini import NATSClient
 from .outbox import KINDS, CausalChecker, Outbox
 
@@ -192,6 +196,7 @@ def main(argv=None):
     v.add_argument("path")
     g = sub.add_parser("gc")
     g.add_argument("--archive-days", type=int, default=90)
+    register_m4(sub)
     args = p.parse_args(argv)
     if args.cmd == "serve":
         # local argv: --root/--url default from the real defaults
@@ -205,7 +210,8 @@ def main(argv=None):
         return daemon_main(sv)
     return {"init": cmd_init, "emit": cmd_emit, "pub": cmd_pub,
             "sub": cmd_sub, "status": cmd_status, "replay": cmd_replay,
-            "verify": cmd_verify, "gc": cmd_gc}[args.cmd](args)
+            "verify": cmd_verify, "gc": cmd_gc,
+            "sync-repo": cmd_sync_repo, "ingest": cmd_ingest}[args.cmd](args)
 
 
 if __name__ == "__main__":
