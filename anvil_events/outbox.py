@@ -6,6 +6,7 @@ consistency arXiv:2011.09753).
 """
 import json
 import os
+import re
 import threading
 import time
 
@@ -240,9 +241,12 @@ class Outbox:
                                              {"cause": f"archive size {total} > {max_bytes}"})
                 # HARD CAP enforcement: evict OLDEST rotated overflow files
                 # (timestamped siblings of the day rotation) until under cap.
+                # Strict pattern: `YYYY-MM-DD.<digits>.jsonl` — never the bare
+                # current-day file or any ordinary archive with dots elsewhere.
+                _ROTATED = re.compile(r"\d{4}-\d{2}-\d{2}\.\d+\.jsonl$")
                 overflow = sorted(
                     (os.path.join(self.archive_dir, f) for f in os.listdir(self.archive_dir)
-                     if f.endswith(".jsonl") and "." in f[:-5]),  # has a .<ts>. suffix
+                     if _ROTATED.match(f)),  # rotated-overflow siblings only
                     key=os.path.getmtime,
                 )
                 for p in overflow:

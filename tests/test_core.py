@@ -390,9 +390,11 @@ class TestDaemonHealthObservability(unittest.TestCase):
             port = probe.getsockname()[1]
             probe.close()
             d.health_addr = ("127.0.0.1", port)
-            # seed a pending event (unpublished -> degraded signal)
+            # seed a pending event (unpublished -> degraded signal) plus an
+            # event.degraded record (so degraded_events counts it)
             o = d.out
             o.emit("p1", "host.status", "node-a", {"host": "h", "reachable": True})
+            o.emit("local", "event.degraded", "local", {"cause": "test"})
             d._stats["received"] = 1
             d._stats["dropped"] = 0
             t = threading.Thread(target=d._health_loop, daemon=True)
@@ -412,7 +414,8 @@ class TestDaemonHealthObservability(unittest.TestCase):
                 stats = json.loads(body)
                 self.assertIn("pending", stats)
                 self.assertIn("degraded_events", stats)
-                self.assertGreaterEqual(stats["pending"], 1)
+                self.assertGreaterEqual(stats["pending"], 2)
+                self.assertGreaterEqual(stats["degraded_events"], 1)
                 self.assertEqual(stats["received"], 1)
             finally:
                 d.stop()
@@ -548,26 +551,37 @@ class TestGCSizeGuard(unittest.TestCase):
             o = Outbox(root)
             # create two rotated-overflow files (from prior rotations) + current day
             day = utcnow_iso()[:10]
-            for name in (f"{day}.1000.jsonl", f"{day}.2000.jsonl"):
+            sizes = {f"{day}.1000.jsonl": 40, f"{day}.2000.jsonl": 80}
+            for name, age in ((f"{day}.1000.jsonl", 3), (f"{day}.2000.jsonl", 1)):
                 p = os.path.join(root, "archive", name)
                 with open(p, "w") as f:
-                    f.write("x" * 80)  # 80 bytes each
-                os.utime(p, (time.time() - 10,) * 2)  # recent (older than current day file)
-            # a big current-day file pushes total over the 200-byte cap
+                    f.write("x" * sizes[name])
+                os.utime(p, (time.time() - age * 10,) * 2)  # distinct mtimes
+            # an ORDINARY archive (not rotated-overflow) must NEVER be evicted
+            ordinary = os.path.join(root, "archive", "2026-06-01.jsonl")
+            with open(ordinary, "w") as f:
+                f.write("y" * 50)
+            # a big current-day file pushes total over the 340-byte cap
             with open(os.path.join(root, "archive", day + ".jsonl"), "w") as f:
                 f.write("x" * 200)
-            result = o.gc(archive_days=90, max_bytes=200)
+            result = o.gc(archive_days=90, max_bytes=340)
             self.assertTrue(result["rotated"], result)
             self.assertTrue(result["degraded"], "must emit event.degraded")
-            # after eviction: total remaining <= cap (200 default enforced with margin)
+            # after eviction: total remaining <= cap (340 enforced with margin)
             total = sum(os.path.getsize(os.path.join(root, "archive", f))
                         for f in os.listdir(os.path.join(root, "archive"))
                         if f.endswith(".jsonl"))
-            self.assertLessEqual(total, 200, f"hard cap not enforced: total={total}")
-            # the OLDEST rotated file was evicted first (1000 < 2000)
+            self.assertLessEqual(total, 340, f"hard cap not enforced: total={total}")
+            # the OLDEST rotated file (1000, older mtime) was evicted first
             remaining = os.listdir(os.path.join(root, "archive"))
             self.assertNotIn(f"{day}.1000.jsonl", remaining,
                              "oldest rotated overflow must be evicted")
+            # the NEWER rotated file survives (eviction stopped under cap)
+            self.assertIn(f"{day}.2000.jsonl", remaining,
+                          "newer rotated overflow must remain (stopped under cap)")
+            # the ordinary archive file was NOT touched
+            self.assertIn("2026-06-01.jsonl", remaining,
+                          "ordinary archive must never be evicted")
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
