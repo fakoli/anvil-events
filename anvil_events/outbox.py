@@ -55,6 +55,21 @@ class Outbox:
     cursors.json               = {target: {"last_event_id", "producer_seq"}}
     """
 
+    def _with_flock(self, fn, *args, **kwargs):
+        """Run `fn` under the inter-process outbox lock (fcntl flock).
+
+        The same lock that `emit()` uses, so ack()/gc()/append() cannot race
+        across processes (the threading.RLock only guards same-process).
+        """
+        import fcntl
+        lock_path = os.path.join(self.root, ".lock")
+        with open(lock_path, "a") as lockf:
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
+
     def __init__(self, root):
         self.root = root
         self.outbox_dir = os.path.join(root, "outbox")
@@ -67,27 +82,22 @@ class Outbox:
     def emit(self, producer, kind, host, payload, correlation_id=None):
         """Append with an inter-process lock so sequences never collide.
 
-        Uses a flock on the outbox lock file: read/compute/append is one
-        critical section, so two concurrent emitters get distinct seqs.
+        Uses `_with_flock` (fcntl on the outbox lock file): read/compute/
+        append is one critical section, so two concurrent emitters get
+        distinct seqs.
         """
-        import fcntl
-        lock_path = os.path.join(self.root, ".lock")
-        with open(lock_path, "a") as lockf:
-            fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
-            try:
-                pending_seqs = [e.get("producer_seq", 0)
-                                for e in self.read_pending()]
-                curs = self.load_cursors()
-                acked_max = max([c.get("producer_seq", 0)
-                                 for c in curs.values()] or [0])
-                seq = max([1] + pending_seqs + [acked_max]) + 1
-                event = make_event(producer, kind, host, payload,
-                                   correlation_id=correlation_id,
-                                   producer_seq=seq)
-                self.append(event)
-                return event
-            finally:
-                fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
+        return self._with_flock(self._emit_locked, producer, kind, host,
+                                payload, correlation_id)
+
+    def _emit_locked(self, producer, kind, host, payload, correlation_id=None):
+        pending_seqs = [e.get("producer_seq", 0) for e in self.read_pending()]
+        curs = self.load_cursors()
+        acked_max = max([c.get("producer_seq", 0) for c in curs.values()] or [0])
+        seq = max([1] + pending_seqs + [acked_max]) + 1
+        event = make_event(producer, kind, host, payload,
+                           correlation_id=correlation_id, producer_seq=seq)
+        self.append(event)
+        return event
 
     # -- append (outbox-first; fsync) -------------------------------------
     def append(self, event):
@@ -131,7 +141,13 @@ class Outbox:
         the archive has the record. A crash between the two leaves a
         duplicate archive entry (harmless: consumers dedup by `event_id`);
         it NEVER loses the event.
+
+        Runs under the inter-process flock so it cannot race a concurrent
+        `gc()`/`emit()` in another process.
         """
+        self._with_flock(self._ack_locked, event)
+
+    def _ack_locked(self, event):
         with self._lock:
             day = event.get("observed_at", utcnow_iso())[:10]
             src = os.path.join(self.outbox_dir, day + ".jsonl")
@@ -174,14 +190,22 @@ class Outbox:
 
     # -- retention (gc) ------------------------------------------------------
     def gc(self, archive_days=90, max_bytes=500 * 1024 * 1024):
-        """Delete archive files older than `archive_days`; guard archive size.
+        """Delete old archives; rotate + alert (degraded) on archive size.
 
-        If the archive directory exceeds `max_bytes`, rotate to a new file and
-        emit an `event.degraded` record (no silent growth). The whole sweep
-        runs under the outbox lock so it cannot race `ack()`/`emit()`, and the
-        rename is followed by a directory fsync so the removal is durable.
+        `archive_days`: delete archive files older than N days.
+        `max_bytes`: when the archive directory exceeds this, rotate the
+        current-day file to a timestamped sibling and emit an `event.degraded`
+        record. This is ROTATION + ALERTING — the rotated file stays in the
+        archive (total size is bounded only by the day file starting fresh);
+        true cap enforcement (evicting/offloading the rotated file) is the
+        operator adapter's job (M4).
+
+        Runs under the inter-process flock so it cannot race ack()/emit().
         Returns a dict of what happened.
         """
+        return self._with_flock(self._gc_locked, archive_days, max_bytes)
+
+    def _gc_locked(self, archive_days, max_bytes):
         with self._lock:
             cutoff = time.time() - archive_days * 86400
             removed = 0
@@ -190,7 +214,7 @@ class Outbox:
                 if os.path.getmtime(p) < cutoff:
                     os.remove(p)
                     removed += 1
-            # size guard
+            # size guard (rotation + alert)
             total = sum(os.path.getsize(os.path.join(self.archive_dir, f))
                         for f in os.listdir(self.archive_dir)
                         if f.endswith(".jsonl"))
@@ -212,9 +236,11 @@ class Outbox:
                     finally:
                         os.close(dfd)
                 # unique degraded identity from the outbox's own sequence
-                degraded = self.emit("local:gc", "event.degraded", "local",
-                                     {"cause": "archive size %d > %d"
-                                      % (total, max_bytes)})
+                # (call _emit_locked directly — we already hold the flock)
+                degraded = self._emit_locked("local:gc", "event.degraded",
+                                             "local",
+                                             {"cause": "archive size %d > %d"
+                                              % (total, max_bytes)})
             return {"removed": removed, "rotated": rotated,
                     "size": total,
                     "degraded": (degraded or {}).get("event_id")}

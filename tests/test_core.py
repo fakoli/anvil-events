@@ -405,6 +405,47 @@ class TestJetStreamPublish(unittest.TestCase):
             c.publish_js("ok.subject", b"x" * (_MAX_BODY + 1), msg_id="x")
 
 
+class TestEnsureStream(unittest.TestCase):
+    """M2: ensure_stream reports reachability/JS availability honestly."""
+
+    def _fake(self, server_info, connect_ok=True):
+        from anvil_events.nats_mini import NATSClient
+        if not connect_ok:
+            def boom():
+                raise IOError("no broker")
+            return boom
+        c = NATSClient()
+        c.server_info = server_info
+        c.close = lambda: None
+        return lambda: c
+
+    def test_bool_jetstream_info(self):
+        from anvil_events.nats_mini import NATSClient
+        c = NATSClient()
+        out = c.ensure_stream(client_factory=self._fake({"jetstream": True}))
+        self.assertTrue(out["reachable"] and out["jetstream_available"])
+
+    def test_dict_jetstream_info(self):
+        from anvil_events.nats_mini import NATSClient
+        c = NATSClient()
+        out = c.ensure_stream(client_factory=self._fake(
+            {"jetstream": {"config": {"enabled": True}}}))
+        self.assertTrue(out["reachable"] and out["jetstream_available"])
+
+    def test_no_jetstream_reports_false(self):
+        from anvil_events.nats_mini import NATSClient
+        c = NATSClient()
+        out = c.ensure_stream(client_factory=self._fake({"jetstream": False}))
+        self.assertTrue(out["reachable"])
+        self.assertFalse(out["jetstream_available"])
+
+    def test_unreachable_reports_false(self):
+        from anvil_events.nats_mini import NATSClient
+        c = NATSClient()
+        out = c.ensure_stream(client_factory=self._fake({}, connect_ok=False))
+        self.assertFalse(out["reachable"])
+
+
 class TestGCSizeGuard(unittest.TestCase):
     """M2: gc rotates + emits event.degraded when archive exceeds the cap."""
 

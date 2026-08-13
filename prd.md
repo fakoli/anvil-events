@@ -104,17 +104,22 @@ distributed transaction. The concrete semantics:
 
 **Retention (concrete).**
 
-- Outbox entries are `pending` until the publish is acked by JetStream, then
-  move to `events/archive/`.
+- In M2 the durable record is the **local outbox** (fsync'd append); entries
+  move to `events/archive/` via `ack()` when a consumer confirms them. The
+  JetStream mirror + server PUB-ACK ("pending until acked by JetStream") and
+  the retry-with-backoff producer path are **M4** (operator adapter) — M2
+  reports `sent` on socket write and keeps the record in the outbox.
 - Archive files are retained **90 days** and then deleted by a daily sweep
   (`anvil events gc` / the operator cron). JetStream stream retention: **7
-  days** of history for late subscribers (configurable), with `max_age` +
+  days** of history for late subscribers (configurable, M4), with `max_age` +
   `DiscardOld`; the archive is the long-term source, JetStream is the
   short-term window.
 - No event is deleted from the archive before its retention age; the sweep
   logs deletions to the day's journal line.
-- Size guard: if the archive exceeds 500 MB, the sweep rotates to a new file
-  and flags `event.degraded` (no silent growth).
+- Size guard: if the archive exceeds 500 MB, the sweep rotates the current-day
+  file and flags `event.degraded` (rotation + alerting; the rotated file stays
+  in `archive/` under the long-term retention policy; true cap enforcement is
+  M4).
 
 ## Requirements
 

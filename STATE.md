@@ -5,13 +5,12 @@
 
 - **Current milestone:** M2 (finish) — awaiting re-review of review fixes
 - **Current commit:** [SET AT COMMIT] (public main)
-- **In progress:** M2-finish review fixes done (HPUB framing + headers:true +
-  header validation; honest ensure_stream; gc lock + dir fsync + unique
-  degraded; degraded via o.emit unique seq). Awaiting GPT-5.6 re-review.
-- **Open review:** M2 adversarial review returned REQUEST CHANGES (6 findings,
-  all fixed); re-review dispatched after commit
+- **In progress:** M2 re-review #2 fixes done (doc honesty M4, real
+  ensure_stream probe, ack/gc flock). Awaiting GPT-5.6 re-review #2.
+- **Open review:** re-review #1 returned REQUEST CHANGES (3 residual: doc
+  overclaim, ensure_stream nonfunctional, cross-process lock); all fixed
 - **Next action:** re-review verdict → fix any residual → update STATE → M3
-- **Tests/quality:** 33 pass · ruff clean · live HPUB accepted by real broker
+- **Tests/quality:** 37 pass · ruff clean · live ensure_stream + HPUB verified
 - **Notes:** deploy daemon on Mini (launchd) done + verified (KeepAlive).
   nats-server is NOT yet a persistent service (gap → fix in M2-finish or M5).
 

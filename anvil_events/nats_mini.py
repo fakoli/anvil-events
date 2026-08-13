@@ -44,9 +44,13 @@ class NATSClient:
         host, port = parse_url(self.url)
         self.sock = socket.create_connection((host, port), timeout=timeout)
         self.sock.settimeout(timeout)
-        info = self._readline()
-        if not info.strip().startswith(b"INFO"):
-            raise IOError("bad handshake: %r" % info[:80])
+        info_line = self._readline()
+        if not info_line.strip().startswith(b"INFO"):
+            raise IOError("bad handshake: %r" % info_line[:80])
+        try:
+            self.server_info = json.loads(info_line[4:].strip())
+        except Exception:
+            self.server_info = {}
         self._send(b"CONNECT " + json.dumps(PROTO).encode() + b"\r\n")
         self._send(b"PING\r\n")
         while self._readline().strip() != b"PONG":
@@ -122,36 +126,37 @@ class NATSClient:
                    b"\r\n" + header_block + payload + b"\r\n")
 
     def ensure_stream(self, stream="ANVIL", subjects=("anvil.fleet.>",),
-                      max_age_secs=7 * 86400, timeout=5):
-        """Check JetStream is available; report stream existence honestly.
+                      max_age_secs=7 * 86400, timeout=5, client_factory=None):
+        """Report broker reachability + JetStream availability honestly.
 
-        The minimal client does NOT create streams (that is the operator
-        adapter's job in M4 — it requires the JetStream request/reply API).
-        This sends the server ``INFO`` and reports whether JetStream is
-        available and whether the requested stream already exists, so callers
-        can fail loudly (not silently drop) when a stream is missing.
+        The minimal client does NOT create or inventory streams — that is the
+        operator adapter's job in M4 (it requires the JetStream request/reply
+        API). This checks the server's INFO (received during connect) and
+        reports whether JetStream is enabled so callers can fail loudly (not
+        silently drop) when the broker has no JetStream.
 
-        Returns {"available": bool, "stream": name-or-None, "subjects": [...]}.
+        `client_factory` is injectable for tests (default: connect to self.url).
+
+        Returns {"reachable": bool, "jetstream_available": bool}.
         """
-        self._send(b"INFO\r\n")
-        import time
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            line = self._readline()
-            if line.startswith(b"INFO"):
-                info = json.loads(line[4:].decode())
-                cfg = info.get("jetstream", {}).get("config", {})
-                if not bool(info.get("jetstream")) or not cfg.get("enabled"):
-                    return {"available": False, "stream": None,
-                            "subjects": []}
-                streams = cfg.get("known_streams") or []
-                exists = stream in streams
-                return {"available": True,
-                        "stream": stream if exists else None,
-                        "subjects": list(subjects)}
-            if line.strip() == b"PONG":
-                continue
-        return {"available": False, "stream": None, "subjects": []}
+        try:
+            if client_factory is None:
+                def _default_factory():
+                    return NATSClient(self.url).connect(timeout=timeout)
+                client_factory = _default_factory
+            c = client_factory()
+            info = getattr(c, "server_info", {})
+            js = info.get("jetstream", False)
+            # server INFO shape: `jetstream: true` (bool) OR
+            # `jetstream: {"config": {"enabled": true, ...}}` (dict)
+            if isinstance(js, dict):
+                enabled = bool(js.get("config", {}).get("enabled"))
+            else:
+                enabled = bool(js)
+            c.close()
+            return {"reachable": True, "jetstream_available": enabled}
+        except Exception:
+            return {"reachable": False, "jetstream_available": False}
 
     def subscribe(self, subject, count=1, timeout=10):
         """Block until `count` messages (or timeout); yield payloads."""

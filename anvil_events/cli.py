@@ -59,8 +59,10 @@ def cmd_emit(args):
         client = NATSClient(DEFAULT_URL).connect(timeout=3)
         # JetStream publish with Nats-Msg-Id dedup (event_id)
         client.publish_js(event["subject"], event, msg_id=event["event_id"])
-        # Core-style: write is NOT an ack. We report `sent` honestly (reached
-        # the server socket); durability = outbox + JetStream mirror (M2).
+        # Core-style: write is NOT an ack. We report `sent` honestly (the
+        # event reached the server socket). Persistence to the JetStream
+        # mirror and a server PUB-ACK/retry path are the operator adapter's
+        # job (M4); in M2 the durable record is the local outbox.
         sent = True
     except Exception as e:
         # never silent: record the degradation in the journal with a UNIQUE
