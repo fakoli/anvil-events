@@ -158,6 +158,8 @@ def cmd_verify(args):
 def cmd_gc(args):
     result = _outbox(args.root).gc(archive_days=args.archive_days)
     print(f"gc: removed {result['removed']} old archive file(s)")
+    if result.get("evicted"):
+        print(f"gc: evicted {result['evicted']} rotated overflow file(s) (hard cap)")
     if result["rotated"]:
         print("gc: archive exceeded 500MB -> rotated ({})".format(result["size"]))
     if result["degraded"]:

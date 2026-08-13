@@ -107,7 +107,19 @@ class EventsDaemon:
         while not self._stop.is_set():
             try:
                 conn, _ = srv.accept()
-                body = json.dumps(self._stats).encode()
+                stats = dict(self._stats)
+                # M5 observability: surface the degraded signal live.
+                # pending > 0 means events could not be published (degraded);
+                # count event.degraded records seen since start.
+                try:
+                    stats["pending"] = self.out.count_pending()
+                    stats["degraded_events"] = sum(
+                        1 for e in self.out.read_pending()
+                        if e.get("kind") == "event.degraded")
+                except Exception:
+                    stats["pending"] = -1
+                    stats["degraded_events"] = -1
+                body = json.dumps(stats).encode()
                 conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
                              b"Content-Length: %d\r\nConnection: close\r\n\r\n"
                              % len(body) + body)

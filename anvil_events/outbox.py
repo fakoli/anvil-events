@@ -189,18 +189,17 @@ class Outbox:
 
     # -- retention (gc) ------------------------------------------------------
     def gc(self, archive_days=90, max_bytes=500 * 1024 * 1024):
-        """Delete old archives; rotate + alert (degraded) on archive size.
+        """Delete old archives; rotate + enforce cap; alert (degraded) on oversize.
 
         `archive_days`: delete archive files older than N days.
         `max_bytes`: when the archive directory exceeds this, rotate the
-        current-day file to a timestamped sibling and emit an `event.degraded`
-        record. This is ROTATION + ALERTING — the rotated file stays in the
-        archive (total size is bounded only by the day file starting fresh);
-        true cap enforcement (evicting/offloading the rotated file) is the
-        operator adapter's job (M4).
+        current-day file to a timestamped sibling, emit an `event.degraded`
+        record, then ENFORCE the hard cap by evicting the OLDEST rotated
+        overflow files until the archive is under `max_bytes` again (true
+        retention enforcement — M5; M2 only rotated + alerted).
 
         Runs under the inter-process flock so it cannot race ack()/emit().
-        Returns a dict of what happened.
+        Returns a dict of what happened, including `evicted` count.
         """
         return self._with_flock(self._gc_locked, archive_days, max_bytes)
 
@@ -213,11 +212,12 @@ class Outbox:
                 if os.path.getmtime(p) < cutoff:
                     os.remove(p)
                     removed += 1
-            # size guard (rotation + alert)
+            # size guard (rotation + alert + HARD CAP enforcement)
             total = sum(os.path.getsize(os.path.join(self.archive_dir, f))
                         for f in os.listdir(self.archive_dir)
                         if f.endswith(".jsonl"))
             rotated = False
+            evicted = 0
             degraded = None
             if total > max_bytes:
                 # rotate: rename current day archive to a timestamped overflow
@@ -238,7 +238,21 @@ class Outbox:
                 degraded = self._emit_locked("local:gc", "event.degraded",
                                              "local",
                                              {"cause": f"archive size {total} > {max_bytes}"})
-            return {"removed": removed, "rotated": rotated,
+                # HARD CAP enforcement: evict OLDEST rotated overflow files
+                # (timestamped siblings of the day rotation) until under cap.
+                overflow = sorted(
+                    (os.path.join(self.archive_dir, f) for f in os.listdir(self.archive_dir)
+                     if f.endswith(".jsonl") and "." in f[:-5]),  # has a .<ts>. suffix
+                    key=os.path.getmtime,
+                )
+                for p in overflow:
+                    if total <= max_bytes:
+                        break
+                    size = os.path.getsize(p)
+                    os.remove(p)
+                    total -= size
+                    evicted += 1
+            return {"removed": removed, "rotated": rotated, "evicted": evicted,
                     "size": total,
                     "degraded": (degraded or {}).get("event_id")}
 

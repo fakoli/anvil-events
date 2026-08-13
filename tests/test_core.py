@@ -372,6 +372,54 @@ class TestDaemonGate(unittest.TestCase):
         self.assertFalse(EventsDaemon._valid(e))
 
 
+class TestDaemonHealthObservability(unittest.TestCase):
+    """M5: health endpoint surfaces the degraded signal (pending + degraded_events)."""
+
+    def test_health_reports_pending_and_degraded(self):
+        import json
+        import socket
+        import threading
+
+        from anvil_events.daemon import EventsDaemon
+        root = tempfile.mkdtemp()
+        try:
+            d = EventsDaemon(root=root, health=("127.0.0.1", 0))
+            # override the bound port with a free one
+            probe = socket.socket()
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+            probe.close()
+            d.health_addr = ("127.0.0.1", port)
+            # seed a pending event (unpublished -> degraded signal)
+            o = d.out
+            o.emit("p1", "host.status", "node-a", {"host": "h", "reachable": True})
+            d._stats["received"] = 1
+            d._stats["dropped"] = 0
+            t = threading.Thread(target=d._health_loop, daemon=True)
+            t.start()
+            import time
+            time.sleep(0.2)
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=2) as s:
+                    s.settimeout(2)
+                    data = b""
+                    while True:
+                        chunk = s.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                body = data.split(b"\r\n\r\n", 1)[1]
+                stats = json.loads(body)
+                self.assertIn("pending", stats)
+                self.assertIn("degraded_events", stats)
+                self.assertGreaterEqual(stats["pending"], 1)
+                self.assertEqual(stats["received"], 1)
+            finally:
+                d.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
 class TestJetStreamPublish(unittest.TestCase):
     """M2: HPUB with Nats-Msg-Id dedup header; ensure_stream reports JS."""
 
@@ -486,6 +534,40 @@ class TestGCSizeGuard(unittest.TestCase):
             os.utime(old, (time.time() - 400 * 86400,) * 2)
             result = o.gc(archive_days=90, max_bytes=10 ** 9)
             self.assertEqual(result["removed"], 1)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_gc_enforces_hard_cap_evicts_oldest_rotated(self):
+        # M5: the size guard must ENFORCE the hard cap — after rotating the
+        # current-day file, evict the OLDEST rotated overflow files until
+        # under max_bytes (true retention enforcement, not just rotation).
+        root = tempfile.mkdtemp()
+        try:
+            import os
+            import time
+            o = Outbox(root)
+            # create two rotated-overflow files (from prior rotations) + current day
+            day = utcnow_iso()[:10]
+            for name in (f"{day}.1000.jsonl", f"{day}.2000.jsonl"):
+                p = os.path.join(root, "archive", name)
+                with open(p, "w") as f:
+                    f.write("x" * 80)  # 80 bytes each
+                os.utime(p, (time.time() - 10,) * 2)  # recent (older than current day file)
+            # a big current-day file pushes total over the 200-byte cap
+            with open(os.path.join(root, "archive", day + ".jsonl"), "w") as f:
+                f.write("x" * 200)
+            result = o.gc(archive_days=90, max_bytes=200)
+            self.assertTrue(result["rotated"], result)
+            self.assertTrue(result["degraded"], "must emit event.degraded")
+            # after eviction: total remaining <= cap (200 default enforced with margin)
+            total = sum(os.path.getsize(os.path.join(root, "archive", f))
+                        for f in os.listdir(os.path.join(root, "archive"))
+                        if f.endswith(".jsonl"))
+            self.assertLessEqual(total, 200, f"hard cap not enforced: total={total}")
+            # the OLDEST rotated file was evicted first (1000 < 2000)
+            remaining = os.listdir(os.path.join(root, "archive"))
+            self.assertNotIn(f"{day}.1000.jsonl", remaining,
+                             "oldest rotated overflow must be evicted")
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
