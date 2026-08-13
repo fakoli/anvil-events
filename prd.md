@@ -50,8 +50,10 @@ failure.
 
 - An enabled event that cannot be journaled (disk failure) **fails the
   operation** (or aborts with a clear error) rather than proceeding silently.
-- A journaled event that cannot be published is `pending` — surfaced, retried
-  with backoff, and never dropped while `enabled`.
+- A journaled event that cannot be published is `pending` — surfaced via
+  `anvil events status` and an `event.degraded` record, and never dropped
+  while `enabled`. (Automatic retry with backoff is the M4 producer path;
+  M2 surfaces the pending state honestly.)
 - `[events] enabled: false` is the ONLY way a change produces no event, and it
   is explicit, not default-silent.
 
@@ -138,7 +140,7 @@ distributed transaction. The concrete semantics:
 - **R003 — Subscribe from anywhere.** `anvil events sub <subject>` receives
   events; `--count`/`--timeout` for bounded use.
 - **R004 — Durable journal + outbox.** The outbox is the authoritative local
-  journal (IMPLEMENTED, M1); JetStream (NATS, PLANNED M2) provides durable
+  journal (IMPLEMENTED, M1); JetStream (NATS, PLANNED M4) provides durable
   server-side subjects for late subscribers and multi-host replay. Journal
   authority is the **producer's local outbox**; JetStream is a replicated
   mirror for fleet consumers. Both are append-only, rotation + retention
@@ -179,8 +181,10 @@ distributed transaction. The concrete semantics:
    freeze the v1 JSON Schema + kind list; add vocabulary compatibility tests;
    set up CI (lint, unit, schema conformance).
 2. **M2 — Core CLI (stdlib) + outbox.** `anvil events pub/sub/replay/status`
-   with local outbox (fsync'd JSONL), retry/backoff, degraded status; JetStream
-   stream/consumer config; hermetic tests (fakes, no network). **Includes the
+   with local outbox (fsync'd JSONL, torn-line recovery) and degraded status
+   (`event.degraded` on publish failure); hermetic tests (fakes, no network).
+   Retry-with-backoff and the JetStream stream/consumer config are M4.
+   **Includes the
    `serve` daemon verb (subscriber + journal) and `deploy/` sample runtimes —
    launchd/systemd units + Dockerfile + compose (ADR-0002).**
 3. **M3 — anvil-serving `[events]` seam.** Outbox-first best-effort publish
