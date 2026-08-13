@@ -22,13 +22,13 @@ def utcnow_iso():
 
 
 def make_event(producer, kind, host, payload, correlation_id=None,
-               producer_seq=1, observed_at=None, version=1):
+               producer_seq=1, observed_at=None, causes=None, version=1):
     """Build a v1 envelope. Raises ValueError on unknown kind."""
     if kind not in KINDS:
         raise ValueError("unknown kind %r; frozen kinds: %s"
                          % (kind, ",".join(sorted(KINDS))))
     seq = int(producer_seq)
-    return {
+    ev = {
         "version": version,
         "event_id": "%s:%06d" % (producer, seq),
         "producer": producer,
@@ -42,6 +42,9 @@ def make_event(producer, kind, host, payload, correlation_id=None,
         "subject": "anvil.fleet.%s.%s" % (host, kind),
         "payload": payload or {},
     }
+    if causes:
+        ev["causes"] = causes          # explicit causal edges (event_ids)
+    return ev
 
 
 class Outbox:
@@ -60,6 +63,31 @@ class Outbox:
         for d in (self.outbox_dir, self.archive_dir):
             os.makedirs(d, exist_ok=True)
         self._lock = threading.RLock()
+
+    def emit(self, producer, kind, host, payload, correlation_id=None):
+        """Append with an inter-process lock so sequences never collide.
+
+        Uses a flock on the outbox lock file: read/compute/append is one
+        critical section, so two concurrent emitters get distinct seqs.
+        """
+        import fcntl
+        lock_path = os.path.join(self.root, ".lock")
+        with open(lock_path, "a") as lockf:
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+            try:
+                pending_seqs = [e.get("producer_seq", 0)
+                                for e in self.read_pending()]
+                curs = self.load_cursors()
+                acked_max = max([c.get("producer_seq", 0)
+                                 for c in curs.values()] or [0])
+                seq = max([1] + pending_seqs + [acked_max]) + 1
+                event = make_event(producer, kind, host, payload,
+                                   correlation_id=correlation_id,
+                                   producer_seq=seq)
+                self.append(event)
+                return event
+            finally:
+                fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
 
     # -- append (outbox-first; fsync) -------------------------------------
     def append(self, event):
@@ -97,16 +125,24 @@ class Outbox:
         return sum(1 for _ in self.read_pending())
 
     def ack(self, event):
-        """Move a delivered event to the archive + advance the target cursor.
+        """Confirm delivery: record into archive, THEN remove from pending.
 
-        Atomically rewrites the pending file (write-then-`os.replace`) and
-        fsyncs the archive, so a crash cannot tear the move.
+        Order matters for crash-safety: we never remove from pending before
+        the archive has the record. A crash between the two leaves a
+        duplicate archive entry (harmless: consumers dedup by `event_id`);
+        it NEVER loses the event.
         """
         with self._lock:
             day = event.get("observed_at", utcnow_iso())[:10]
             src = os.path.join(self.outbox_dir, day + ".jsonl")
             dst = os.path.join(self.archive_dir, day + ".jsonl")
             key = json.dumps(event, sort_keys=True)
+            # 1) archive first (durable record of delivery)
+            with open(dst, "a", encoding="utf-8") as f:
+                f.write(key + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            # 2) then remove from pending (atomic rewrite)
             if os.path.exists(src):
                 with open(src, encoding="utf-8") as f:
                     lines = [line_ for line_ in f if line_.strip() != key]
@@ -116,10 +152,6 @@ class Outbox:
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(tmp, src)
-            with open(dst, "a", encoding="utf-8") as f:
-                f.write(key + "\n")
-                f.flush()
-                os.fsync(f.fileno())
             self._set_cursor(event)
 
     def _set_cursor(self, event):
@@ -238,39 +270,35 @@ class CausalChecker:
         # may legally repeat a record, e.g. from an archive + outbox scan).
         seen = set()
         uniq = []
+        by_id = {}
         for e in events:
             eid = e.get("event_id")
             if eid in seen:
                 continue
             seen.add(eid)
             uniq.append(e)
+            by_id[eid] = len(uniq) - 1
         events = uniq
         n = len(events)
         # topological sort via Kahn's algorithm (no recursion)
         adj = [set() for _ in range(n)]
         indeg = [0] * n
         by_producer = {}
-        by_corr = {}
         for i, e in enumerate(events):
             by_producer.setdefault(e.get("producer"), []).append(
                 (e.get("producer_seq", 0), i))
-            corr = e.get("correlation_id")
-            if corr:
-                by_corr.setdefault(corr, []).append(
-                    (e.get("observed_at", ""), i))
+            # explicit causal edges ONLY: `causes` = list of upstream event_ids
+            for cev in (e.get("causes") or []):
+                j = by_id.get(cev)
+                if j is not None and j not in adj[i]:
+                    adj[i].add(j)
+                    indeg[j] += 1
         for lst in by_producer.values():
             lst.sort()
             for (_, i), (_, j) in zip(lst, lst[1:]):
                 if j not in adj[i]:
                     adj[i].add(j)
                     indeg[j] += 1
-        for lst in by_corr.values():
-            lst.sort(key=lambda t: t[0])
-            for (_, i), (_, j) in zip(lst, lst[1:]):
-                if i == j or j in adj[i]:
-                    continue
-                adj[i].add(j)
-                indeg[j] += 1
         # Kahn: if we can't drain all nodes, there's a cycle
         import collections
         q = collections.deque([i for i in range(n) if indeg[i] == 0])

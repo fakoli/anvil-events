@@ -16,7 +16,7 @@ import os
 import sys
 
 from .nats_mini import NATSClient
-from .outbox import CausalChecker, KINDS, Outbox, make_event
+from .outbox import CausalChecker, KINDS, Outbox
 
 DEFAULT_ROOT = os.path.expanduser("~/.anvil/events")
 DEFAULT_URL = os.environ.get("ANVIL_EVENTS_NATS_URL", "nats://127.0.0.1:4222")
@@ -44,35 +44,27 @@ def cmd_init(args):
 def cmd_emit(args):
     """Outbox-FIRST: write to the durable outbox, then attempt publish."""
     o = _outbox(args.root)
-    # sequence = max(pending seq, acked cursor seq) + 1  -> never reuse
-    pending_seqs = [e.get("producer_seq", 0) for e in o.read_pending()]
-    curs = o.load_cursors()
-    acked_max = max([c.get("producer_seq", 0) for c in curs.values()] or [0])
-    seq = max([1] + pending_seqs + [acked_max]) + 1
-    try:
-        payload = json.loads(args.payload)
-        event = make_event(args.producer, args.kind, args.host, payload,
-                           correlation_id=args.correlation, producer_seq=seq)
-    except ValueError as e:
-        sys.exit("emit error: %s" % e)
-    path = o.append(event)          # 1) durable record (fsync'd)
-    delivered = False
+    event = o.emit(args.producer, args.kind, args.host,
+                   json.loads(args.payload or "{}"),
+                   correlation_id=args.correlation)
+    path = os.path.join(o.outbox_dir, ".")
+    sent = False
     client = None
     try:
         client = NATSClient(DEFAULT_URL).connect(timeout=3)
         client.publish(event["subject"], event)
-        # Core NATS write succeeded; this is AT-LEAST-ONCE, not durable.
-        # A JetStream ack (M2) is the durable confirmation; until then we
-        # honestly report the publish reached the server socket.
-        delivered = True
+        # Core NATS: a write is NOT an ack. We honestly report `sent`
+        # (reached the server socket); durability requires JetStream (M2)
+        # or an outbox replay. The outbox remains the source of truth.
+        sent = True
     except Exception as e:
         print("WARN: publish failed (%s) -> event stays pending in %s"
               % (e, path))
     finally:
         if client is not None:
             client.close()
-    print("emitted %s -> %s seq=%d delivered=%s"
-          % (event["event_id"], event["subject"], seq, delivered))
+    print("emitted %s -> %s seq=%d sent=%s"
+          % (event["event_id"], event["subject"], event["producer_seq"], sent))
 
 
 def cmd_pub(args):

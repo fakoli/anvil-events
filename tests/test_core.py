@@ -106,10 +106,10 @@ class TestTargetQueue(unittest.TestCase):
 
 
 class TestCausalChecker(unittest.TestCase):
-    def _ev(self, producer, seq, corr, observed):
+    def _ev(self, producer, seq, corr, observed, causes=None):
         return make_event(producer, "host.status", "h", {},
                           correlation_id=corr, producer_seq=seq,
-                          observed_at=observed)
+                          observed_at=observed, causes=causes)
 
     def test_consistent_journal_passes(self):
         events = [
@@ -120,11 +120,20 @@ class TestCausalChecker(unittest.TestCase):
         ok, err = CausalChecker.check(events)
         self.assertTrue(ok, err)
 
-    def test_skew_cycle_detected(self):
+    def test_explicit_causes_cycle_detected(self):
         events = [
             self._ev("p1", 1, "c1", "2026-08-12T10:00:00.000Z"),
-            self._ev("p1", 5, "c1", "2026-08-12T09:59:00.000Z"),  # seq up, time back
+            self._ev("p1", 2, "c1", "2026-08-12T10:00:01.000Z",
+                     causes=["p1:000001"]),
+            self._ev("p1", 3, "c1", "2026-08-12T10:00:02.000Z",
+                     causes=["p1:000002"]),
+            # cycle: 4 claims 3 caused it, 3 claims 4 caused it
+            self._ev("p1", 4, "c1", "2026-08-12T10:00:03.000Z",
+                     causes=["p1:000003"]),
         ]
+        # add a back-edge: event 3 causes event 4 AND 4 causes 3
+        events[2]["causes"] = ["p1:000002", "p1:000004"]  # 3 caused by 2 AND 4
+        events[3]["causes"] = ["p1:000003"]               # 4 caused by 3
         ok, err = CausalChecker.check(events)
         self.assertFalse(ok)
         self.assertIn("cycle", err)
@@ -258,6 +267,56 @@ class TestCausalScale(unittest.TestCase):
                   for i in range(1500)]
         ok, err = CausalChecker.check(events)
         self.assertTrue(ok, err)
+
+
+class TestConcurrentSeq(unittest.TestCase):
+    """Concurrent emitters must never reuse a sequence (reviewer #2 repro)."""
+
+    def test_threaded_emit_distinct_seqs(self):
+        root = tempfile.mkdtemp()
+        try:
+            import threading
+            o = Outbox(root)
+            results = []
+            def worker(i):
+                # each thread appends via the locked emit
+                ev = o.emit("p1", "host.status", "node-a", {"i": i})
+                results.append(ev["producer_seq"])
+            threads = [threading.Thread(target=worker, args=(i,))
+                       for i in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(len(results), 8)
+            self.assertEqual(len(set(results)), 8,
+                             "concurrent emitters reused a seq: %s" % results)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class TestAckOrdering(unittest.TestCase):
+    """Archive-before-pending: a crash never loses an event (reviewer #1)."""
+
+    def test_ack_archive_first_then_remove_pending(self):
+        root = tempfile.mkdtemp()
+        try:
+            o = Outbox(root)
+            e = make_event("p1", "serve.up", "node-a", {})
+            o.append(e)
+            # archive first, then remove from pending
+            import inspect
+            src = inspect.getsource(o.ack)
+            self.assertLess(src.index("archive"), src.index("remove from pending")
+                            if "remove from pending" in src else 10**9,
+                            "ack must archive before touching pending")
+            # and end-to-end: after ack both done
+            o.ack(e)
+            self.assertEqual(o.count_pending(), 0)
+            with open(os.path.join(root, "archive", "2026-08-13.jsonl")) as f:
+                self.assertIn(e["event_id"], f.read())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":

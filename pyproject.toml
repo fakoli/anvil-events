@@ -9,7 +9,7 @@ description = "Fleet lifecycle event bus and journal for the Anvil family (stdli
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-authors = [{ name = "Sekou Doumbouya" }]
+authors = [{ name = "fakoli" }]
 dependencies = []   # stdlib-only by design
 
 [project.optional-dependencies]
