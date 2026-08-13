@@ -26,7 +26,9 @@
   Python 3.11/3.12/3.13 compatibility and repeated-suite stress verified;
   both independent durability/liveness probe packs pass; exact real-broker
   framed-size and independent-durable replay probes pass; ruff and diff clean;
-  final CI pending commit.
+  final CI pending commit. Public boundary: LICENSE scrubbed of personal
+  identity; AGENTS.md line still carries personal identity (pending explicit
+  approval — protected file).
 - **Notes:** exact-tree two-macOS-host proof verified remote PubAck/archive,
   JetStream persistence, subscriber journaling/dedup, causal checking, and
   validated fact ingestion. Host daemon healthy incl. PubAck/retry
