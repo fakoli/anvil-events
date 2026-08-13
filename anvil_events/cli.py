@@ -15,9 +15,9 @@ import json
 import os
 import sys
 
-from .nats_mini import NATSClient
 from .daemon import main as daemon_main
-from .outbox import CausalChecker, KINDS, Outbox
+from .nats_mini import NATSClient
+from .outbox import KINDS, CausalChecker, Outbox
 
 DEFAULT_ROOT = os.path.expanduser("~/.anvil/events")
 DEFAULT_URL = os.environ.get("ANVIL_EVENTS_NATS_URL", "nats://127.0.0.1:4222")
@@ -38,8 +38,8 @@ def _pub(root, subject, payload):
 
 def cmd_init(args):
     o = _outbox(args.root)
-    print("outbox:  %s" % o.outbox_dir)
-    print("archive: %s" % o.archive_dir)
+    print(f"outbox:  {o.outbox_dir}")
+    print(f"archive: {o.archive_dir}")
 
 
 def cmd_emit(args):
@@ -73,19 +73,17 @@ def cmd_emit(args):
                    correlation_id=event["correlation_id"])
         except Exception:
             pass
-        print("WARN: publish failed (%s) -> event stays pending in %s"
-              % (e, path))
+        print(f"WARN: publish failed ({e}) -> event stays pending in {path}")
     finally:
         if client is not None:
             client.close()
-    print("emitted %s -> %s seq=%d sent=%s"
-          % (event["event_id"], event["subject"], event["producer_seq"], sent))
+    print(f"emitted {event['event_id']} -> {event['subject']} seq={event['producer_seq']} sent={sent}")
 
 
 def cmd_pub(args):
     payload = json.loads(args.payload)
     _pub(args.root, args.subject, payload)
-    print("published %s" % args.subject)
+    print(f"published {args.subject}")
 
 
 def cmd_sub(args):
@@ -98,7 +96,7 @@ def cmd_sub(args):
     for body in got:
         try:
             e = json.loads(body)
-            print("%s %s %s" % (e.get("event_id", "?"), e.get("kind", "?"),
+            print("{} {} {}".format(e.get("event_id", "?"), e.get("kind", "?"),
                                 e.get("subject", args.subject)))
         except Exception:
             print(body.decode(errors="replace")[:200])
@@ -108,9 +106,9 @@ def cmd_status(args):
     o = _outbox(args.root)
     pending = o.count_pending()
     cursors = o.load_cursors()
-    print("pending:   %d" % pending)
-    print("degraded:  %s" % ("yes (pending > 0)" if pending else "no"))
-    print("cursors:   %d target(s)" % len(cursors))
+    print(f"pending:   {pending}")
+    print(f"degraded:  {'yes (pending > 0)' if pending else 'no'}")
+    print(f"cursors:   {len(cursors)} target(s)")
 
 
 def cmd_replay(args):
@@ -124,7 +122,7 @@ def cmd_replay(args):
                         events.append(json.loads(line))
     events.sort(key=lambda e: (e.get("observed_at", ""), e.get("producer_seq", 0)))
     for e in events[-args.lines:]:
-        print("%s %s %s corr=%s" % (e.get("observed_at", "?")[:19],
+        print("{} {} {} corr={}".format(e.get("observed_at", "?")[:19],
                                     e.get("event_id"), e.get("kind"),
                                     e.get("correlation_id")))
 
@@ -146,26 +144,26 @@ def cmd_verify(args):
             events = [json.loads(line_) for line_ in f if line_.strip()]
     events.sort(key=lambda e: (e.get("observed_at", ""), e.get("producer_seq", 0)))
     ok, err = CausalChecker.check(events)
-    print("causal consistency: %s (%d events)" % ("OK" if ok else "VIOLATED", len(events)))
+    print(f"causal consistency: {'OK' if ok else 'VIOLATED'} ({len(events)} events)")
     if err:
-        print("  %s" % err)
+        print(f"  {err}")
         return 1
     return 0
 
 
 def cmd_gc(args):
     result = _outbox(args.root).gc(archive_days=args.archive_days)
-    print("gc: removed %d old archive file(s)" % result["removed"])
+    print(f"gc: removed {result['removed']} old archive file(s)")
     if result["rotated"]:
-        print("gc: archive exceeded 500MB -> rotated (%s)" % result["size"])
+        print("gc: archive exceeded 500MB -> rotated ({})".format(result["size"]))
     if result["degraded"]:
-        print("gc: emitted event.degraded %s" % result["degraded"])
+        print("gc: emitted event.degraded {}".format(result["degraded"]))
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="anvil-events", description=__doc__)
     p.add_argument("--root", default=DEFAULT_ROOT,
-                   help="events root (default %s)" % DEFAULT_ROOT)
+                   help=f"events root (default {DEFAULT_ROOT})")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init")
     e = sub.add_parser("emit")

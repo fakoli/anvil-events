@@ -25,12 +25,11 @@ def make_event(producer, kind, host, payload, correlation_id=None,
                producer_seq=1, observed_at=None, causes=None, version=1):
     """Build a v1 envelope. Raises ValueError on unknown kind."""
     if kind not in KINDS:
-        raise ValueError("unknown kind %r; frozen kinds: %s"
-                         % (kind, ",".join(sorted(KINDS))))
+        raise ValueError("unknown kind {!r}; frozen kinds: {}".format(kind, ",".join(sorted(KINDS))))
     seq = int(producer_seq)
     ev = {
         "version": version,
-        "event_id": "%s:%06d" % (producer, seq),
+        "event_id": f"{producer}:{seq:06d}",
         "producer": producer,
         "producer_seq": seq,
         "observed_at": observed_at or utcnow_iso(),
@@ -39,7 +38,7 @@ def make_event(producer, kind, host, payload, correlation_id=None,
         "schema": SCHEMA,
         "host": host,
         "kind": kind,
-        "subject": "anvil.fleet.%s.%s" % (host, kind),
+        "subject": f"anvil.fleet.{host}.{kind}",
         "payload": payload or {},
     }
     if causes:
@@ -225,8 +224,7 @@ class Outbox:
                 day = utcnow_iso()[:10]
                 src = os.path.join(self.archive_dir, day + ".jsonl")
                 if os.path.exists(src):
-                    dst = os.path.join(self.archive_dir,
-                                       "%s.%d.jsonl" % (day, int(time.time())))
+                    dst = os.path.join(self.archive_dir, f"{day}.{int(time.time())}.jsonl")
                     os.replace(src, dst)
                     rotated = True
                     # fsync the DIRECTORY so the rename is crash-durable
@@ -239,8 +237,7 @@ class Outbox:
                 # (call _emit_locked directly — we already hold the flock)
                 degraded = self._emit_locked("local:gc", "event.degraded",
                                              "local",
-                                             {"cause": "archive size %d > %d"
-                                              % (total, max_bytes)})
+                                             {"cause": f"archive size {total} > {max_bytes}"})
             return {"removed": removed, "rotated": rotated,
                     "size": total,
                     "degraded": (degraded or {}).get("event_id")}
@@ -264,8 +261,7 @@ class TargetQueue:
         self.catchup = []
 
     def __repr__(self):
-        return "<TargetQueue %s term=%d normal=%d catchup=%d>" % (
-            self._NAME[self.state], self.term, len(self.normal), len(self.catchup))
+        return f"<TargetQueue {self._NAME[self.state]} term={self.term} normal={len(self.normal)} catchup={len(self.catchup)}>"
 
     def push(self, entry, is_normal=True, term=1):
         if self.state == self.SUSPENDED:
@@ -360,7 +356,7 @@ class CausalChecker:
                     indeg[i] += 1
         for lst in by_producer.values():
             lst.sort()
-            for (_, i), (_, j) in zip(lst, lst[1:]):
+            for (_, i), (_, j) in zip(lst, lst[1:], strict=False):
                 if j not in adj[i]:
                     adj[i].add(j)
                     indeg[j] += 1
@@ -379,6 +375,5 @@ class CausalChecker:
             # find a node still on a cycle for the message
             remaining = [i for i in range(n) if i not in set(order)]
             cyc = remaining[0] if remaining else 0
-            return False, ("cycle involving event %d: %s"
-                           % (cyc, events[cyc].get("event_id")))
+            return False, f"cycle involving event {cyc}: {events[cyc].get('event_id')}"
         return True, None

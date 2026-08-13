@@ -30,7 +30,7 @@ def parse_url(url):
 def validate_subject(subject):
     """Reject subjects that could inject CRLF/space into the protocol."""
     if not subject or not _VALID_SUBJECT.match(subject):
-        raise ValueError("invalid subject %r" % subject)
+        raise ValueError(f"invalid subject {subject!r}")
     return subject
 
 
@@ -46,7 +46,7 @@ class NATSClient:
         self.sock.settimeout(timeout)
         info_line = self._readline()
         if not info_line.strip().startswith(b"INFO"):
-            raise IOError("bad handshake: %r" % info_line[:80])
+            raise OSError(f"bad handshake: {info_line[:80]!r}")
         try:
             self.server_info = json.loads(info_line[4:].strip())
         except Exception:
@@ -64,29 +64,29 @@ class NATSClient:
         while b"\r\n" not in self._buf:
             chunk = self.sock.recv(65536)
             if not chunk:
-                raise IOError("connection closed")
+                raise OSError("connection closed")
             self._buf += chunk
             if len(self._buf) > 2 * _MAX_BODY:
-                raise IOError("protocol buffer overflow")
+                raise OSError("protocol buffer overflow")
         line, self._buf = self._buf.split(b"\r\n", 1)
         if line.startswith(b"-ERR"):
-            raise IOError(line.decode(errors="replace"))
+            raise OSError(line.decode(errors="replace"))
         return line
 
     def _read_n(self, n):
         if n > _MAX_BODY:
-            raise IOError("frame too large: %d" % n)
+            raise OSError(f"frame too large: {n}")
         while len(self._buf) < n + 2:
             chunk = self.sock.recv(65536)
             if not chunk:
-                raise IOError("connection closed")
+                raise OSError("connection closed")
             self._buf += chunk
         body, self._buf = self._buf[:n], self._buf[n + 2:]
         return body
 
     def publish(self, subject, payload):
         validate_subject(subject)
-        if isinstance(payload, (dict, list)):
+        if isinstance(payload, dict | list):
             payload = json.dumps(payload).encode()
         if len(payload) > _MAX_BODY:
             raise ValueError("payload too large")
@@ -109,7 +109,7 @@ class NATSClient:
         ``ensure_stream``).
         """
         validate_subject(subject)
-        if isinstance(payload, (dict, list)):
+        if isinstance(payload, dict | list):
             payload = json.dumps(payload).encode()
         if len(payload) > _MAX_BODY:
             raise ValueError("payload too large")
@@ -177,7 +177,7 @@ class NATSClient:
                     nbytes = int(parts[-1])
                     body = self._read_n(nbytes)
                     got.append(body)
-        except socket.timeout:
+        except TimeoutError:
             pass
         return got
 

@@ -11,7 +11,13 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from anvil_events.outbox import (  # noqa: E402
-    CausalChecker, KINDS, Outbox, TargetQueue, make_event, utcnow_iso)
+    KINDS,
+    CausalChecker,
+    Outbox,
+    TargetQueue,
+    make_event,
+    utcnow_iso,
+)
 
 
 class TestEnvelope(unittest.TestCase):
@@ -130,7 +136,7 @@ class TestCausalChecker(unittest.TestCase):
                      causes=["p1:000002"]),
         ]
         ok, err = CausalChecker.check(events)
-        self.assertTrue(ok, "valid causal chain must pass: %s" % err)
+        self.assertTrue(ok, f"valid causal chain must pass: {err}")
 
     def test_explicit_causes_cycle_detected(self):
         """Mutual causality (a causes b, b causes a) is a real cycle."""
@@ -156,7 +162,7 @@ class TestNATSClient(unittest.TestCase):
     def test_validate_subject_rejects_injection(self):
         from anvil_events.nats_mini import validate_subject
         for bad in ["a\r\nPUB x 0\r\n", "a b", "a\nb", "a\tb", "", "a*"]:
-            with self.assertRaises(ValueError, msg="should reject %r" % bad):
+            with self.assertRaises(ValueError, msg=f"should reject {bad!r}"):
                 validate_subject(bad)
         for good in ["a.b.c", "anvil.fleet.>", "anvil.fleet.node-a.serve.up",
                      "x-y_z.1"]:
@@ -202,8 +208,8 @@ class TestCLISequence(unittest.TestCase):
             cli.NATSClient = orig
 
     def test_no_event_id_reuse_with_pending(self):
-        import tempfile
         import shutil
+        import tempfile
         root = tempfile.mkdtemp()
         try:
             # two emits with NATS failing => both stay pending, distinct seqs
@@ -224,7 +230,7 @@ class TestCLISequence(unittest.TestCase):
             # (fixed producer_seq=1 was a bug — corrupted per-producer order)
             ids = [e["event_id"] for e in degraded]
             self.assertEqual(len(set(ids)), len(ids),
-                             "degraded event_ids must be unique: %s" % ids)
+                             f"degraded event_ids must be unique: {ids}")
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -232,7 +238,7 @@ class TestCLISequence(unittest.TestCase):
 class _NoNATS:
     """Fake client that always fails to publish (hermetic fragility test)."""
     def __init__(self, url=None): pass
-    def connect(self, timeout=None): raise IOError("no broker")
+    def connect(self, timeout=None): raise OSError("no broker")
     def close(self): pass
 
 
@@ -261,7 +267,7 @@ class TestCrashRecovery(unittest.TestCase):
         root = tempfile.mkdtemp()
         try:
             o = Outbox(root)
-            events = [make_event("p%02d" % (i % 3), "host.status", "node-a",
+            events = [make_event(f"p{i % 3:02d}", "host.status", "node-a",
                                  {"i": i}, producer_seq=(i // 3) + 1)
                       for i in range(9)]
             import threading
@@ -280,7 +286,7 @@ class TestCausalScale(unittest.TestCase):
     def test_large_chain_no_recursion_error(self):
         events = [make_event("p1", "host.status", "node-a", {},
                              producer_seq=i + 1,
-                             observed_at="2026-08-12T10:%02d:00.000Z" % (i % 60))
+                             observed_at=f"2026-08-12T10:{i % 60:02d}:00.000Z")
                   for i in range(1500)]
         ok, err = CausalChecker.check(events)
         self.assertTrue(ok, err)
@@ -307,7 +313,7 @@ class TestConcurrentSeq(unittest.TestCase):
                 t.join()
             self.assertEqual(len(results), 8)
             self.assertEqual(len(set(results)), 8,
-                             "concurrent emitters reused a seq: %s" % results)
+                             f"concurrent emitters reused a seq: {results}")
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -412,7 +418,7 @@ class TestEnsureStream(unittest.TestCase):
         from anvil_events.nats_mini import NATSClient
         if not connect_ok:
             def boom():
-                raise IOError("no broker")
+                raise OSError("no broker")
             return boom
         c = NATSClient()
         c.server_info = server_info

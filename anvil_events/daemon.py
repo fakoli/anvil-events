@@ -112,7 +112,7 @@ class EventsDaemon:
                              b"Content-Length: %d\r\nConnection: close\r\n\r\n"
                              % len(body) + body)
                 conn.close()
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except Exception:
                 pass
@@ -143,8 +143,8 @@ def main(argv=None):
 
     d = EventsDaemon(root=args.root, url=args.url, subject=args.subject,
                      health=("127.0.0.1", args.health_port))
-    print("anvil events serve: subject=%s root=%s url=%s health=127.0.0.1:%d"
-          % (args.subject, args.root, args.url, args.health_port), flush=True)
+    print(f"anvil events serve: subject={args.subject} root={args.root} url={args.url} "
+          f"health=127.0.0.1:{args.health_port}", flush=True)
     if args.once:
         # bounded run: keep appending until SIGINT (tests use --once + timeout)
         d.start()
