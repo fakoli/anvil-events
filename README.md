@@ -5,7 +5,13 @@
 Every lifecycle change on any Anvil host — serve up/down, profile enter/leave,
 promotion applied, config adopted, repo synced — publishes a versioned JSON
 event and appends it to a durable journal. It answers the question that git
-archaeology can't: **"what changed on node-a, and when?"**
+archaeology can't: **"what changed on that box, and when?"**
+
+> **📖 Why this exists** — the story that started it: one fleet spread across
+> several machines, each earning its keep differently, all needing to know
+> about each other. Experiments that ran but never told anyone; agents that
+> couldn't see a change that had happened a box away; a simple reframe —
+> **the promotion is the event.** Read it: [`docs/origin-story.md`](docs/origin-story.md).
 
 - **anvil** coordinates *who* does what.
 - **anvil-serving** serves *what* models on which tiers.
