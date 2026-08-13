@@ -3,14 +3,15 @@
 > Updated at every milestone boundary. The single source of truth for "what
 > is done / what is next" across context compactions. See AGENTS.md §3.
 
-- **Current milestone:** M2 (finish) — Core CLI + outbox + JetStream + degraded + gc
+- **Current milestone:** M2 (finish) — awaiting re-review of review fixes
 - **Current commit:** [SET AT COMMIT] (public main)
-- **In progress:** M2-finish done (JetStream HPUB dedup publish, gc size guard +
-  rotate + event.degraded, degraded-on-emit-failure). Awaiting adversarial
-  review of the merged M2.
-- **Open review:** pending GPT-5.6 adversarial review of M2-finish (dispatch after commit)
-- **Next action:** dispatch review → fix feedback → update STATE → M3
-- **Tests/quality:** 31 pass · ruff clean
+- **In progress:** M2-finish review fixes done (HPUB framing + headers:true +
+  header validation; honest ensure_stream; gc lock + dir fsync + unique
+  degraded; degraded via o.emit unique seq). Awaiting GPT-5.6 re-review.
+- **Open review:** M2 adversarial review returned REQUEST CHANGES (6 findings,
+  all fixed); re-review dispatched after commit
+- **Next action:** re-review verdict → fix any residual → update STATE → M3
+- **Tests/quality:** 33 pass · ruff clean · live HPUB accepted by real broker
 - **Notes:** deploy daemon on Mini (launchd) done + verified (KeepAlive).
   nats-server is NOT yet a persistent service (gap → fix in M2-finish or M5).
 

@@ -177,37 +177,47 @@ class Outbox:
         """Delete archive files older than `archive_days`; guard archive size.
 
         If the archive directory exceeds `max_bytes`, rotate to a new file and
-        emit an `event.degraded` record (no silent growth). Returns a dict of
-        what happened.
+        emit an `event.degraded` record (no silent growth). The whole sweep
+        runs under the outbox lock so it cannot race `ack()`/`emit()`, and the
+        rename is followed by a directory fsync so the removal is durable.
+        Returns a dict of what happened.
         """
-        cutoff = time.time() - archive_days * 86400
-        removed = 0
-        for fn in os.listdir(self.archive_dir):
-            p = os.path.join(self.archive_dir, fn)
-            if os.path.getmtime(p) < cutoff:
-                os.remove(p)
-                removed += 1
-        # size guard
-        total = sum(os.path.getsize(os.path.join(self.archive_dir, f))
-                    for f in os.listdir(self.archive_dir)
-                    if f.endswith(".jsonl"))
-        rotated = False
-        degraded = None
-        if total > max_bytes:
-            # rotate: rename current day archive to a timestamped overflow
-            day = utcnow_iso()[:10]
-            src = os.path.join(self.archive_dir, day + ".jsonl")
-            if os.path.exists(src):
-                dst = os.path.join(self.archive_dir,
-                                   "%s.%d.jsonl" % (day, int(time.time())))
-                os.replace(src, dst)
-                rotated = True
-            degraded = make_event("local:gc", "event.degraded", "local",
-                                  {"cause": "archive size %d > %d"
-                                   % (total, max_bytes)})
-            self.append(degraded)
-        return {"removed": removed, "rotated": rotated,
-                "size": total, "degraded": (degraded or {}).get("event_id")}
+        with self._lock:
+            cutoff = time.time() - archive_days * 86400
+            removed = 0
+            for fn in os.listdir(self.archive_dir):
+                p = os.path.join(self.archive_dir, fn)
+                if os.path.getmtime(p) < cutoff:
+                    os.remove(p)
+                    removed += 1
+            # size guard
+            total = sum(os.path.getsize(os.path.join(self.archive_dir, f))
+                        for f in os.listdir(self.archive_dir)
+                        if f.endswith(".jsonl"))
+            rotated = False
+            degraded = None
+            if total > max_bytes:
+                # rotate: rename current day archive to a timestamped overflow
+                day = utcnow_iso()[:10]
+                src = os.path.join(self.archive_dir, day + ".jsonl")
+                if os.path.exists(src):
+                    dst = os.path.join(self.archive_dir,
+                                       "%s.%d.jsonl" % (day, int(time.time())))
+                    os.replace(src, dst)
+                    rotated = True
+                    # fsync the DIRECTORY so the rename is crash-durable
+                    dfd = os.open(self.archive_dir, os.O_RDONLY)
+                    try:
+                        os.fsync(dfd)
+                    finally:
+                        os.close(dfd)
+                # unique degraded identity from the outbox's own sequence
+                degraded = self.emit("local:gc", "event.degraded", "local",
+                                     {"cause": "archive size %d > %d"
+                                      % (total, max_bytes)})
+            return {"removed": removed, "rotated": rotated,
+                    "size": total,
+                    "degraded": (degraded or {}).get("event_id")}
 
 
 class TargetQueue:

@@ -220,6 +220,11 @@ class TestCLISequence(unittest.TestCase):
             degraded = [e for e in o.read_pending()
                         if e["kind"] == "event.degraded"]
             self.assertGreaterEqual(len(degraded), 2)
+            # REVIEW FIX: degraded events must have DISTINCT identities
+            # (fixed producer_seq=1 was a bug — corrupted per-producer order)
+            ids = [e["event_id"] for e in degraded]
+            self.assertEqual(len(set(ids)), len(ids),
+                             "degraded event_ids must be unique: %s" % ids)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -373,15 +378,25 @@ class TestJetStreamPublish(unittest.TestCase):
                      {"kind": "serve.up"}, msg_id="p1:000001")
         frame = captured[0]
         self.assertTrue(frame.startswith(b"HPUB "))
-        self.assertIn(b"Nats-Msg-Id: p1:000001", frame)
-        # HPUB <subj> <hdrsize> <total> then headers + body
+        # mandatory NATS/1.0 preamble + blank line + Nats-Msg-Id header
+        self.assertIn(b"NATS/1.0\r\nNats-Msg-Id: p1:000001\r\n\r\n", frame)
         self.assertIn(b"anvil.fleet.node-a.serve.up", frame)
+
+    def test_publish_js_headers_flag_in_proto(self):
+        from anvil_events.nats_mini import PROTO
+        self.assertTrue(PROTO.get("headers"), "CONNECT must advertise headers")
 
     def test_publish_js_rejects_injection(self):
         from anvil_events.nats_mini import NATSClient
         c = NATSClient()
         with self.assertRaises(ValueError):
             c.publish_js("a\r\nPUB x 0\r\n", {}, msg_id="x")
+
+    def test_publish_js_header_value_injection_rejected(self):
+        from anvil_events.nats_mini import NATSClient
+        c = NATSClient()
+        with self.assertRaises(ValueError):
+            c.publish_js("ok.subject", {}, msg_id="p1:000001\r\nEVIL")
 
     def test_publish_js_oversize_rejected(self):
         from anvil_events.nats_mini import _MAX_BODY, NATSClient

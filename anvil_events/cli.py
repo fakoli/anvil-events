@@ -17,7 +17,7 @@ import sys
 
 from .nats_mini import NATSClient
 from .daemon import main as daemon_main
-from .outbox import CausalChecker, KINDS, Outbox, make_event
+from .outbox import CausalChecker, KINDS, Outbox
 
 DEFAULT_ROOT = os.path.expanduser("~/.anvil/events")
 DEFAULT_URL = os.environ.get("ANVIL_EVENTS_NATS_URL", "nats://127.0.0.1:4222")
@@ -63,12 +63,12 @@ def cmd_emit(args):
         # the server socket); durability = outbox + JetStream mirror (M2).
         sent = True
     except Exception as e:
-        # never silent: record the degradation in the journal
+        # never silent: record the degradation in the journal with a UNIQUE
+        # identity (via the outbox's locked sequence, not fixed seq=1)
         try:
-            o.append(make_event("local:emit", "event.degraded", event["host"],
-                                {"cause": str(e), "event_id": event["event_id"]},
-                                correlation_id=event["correlation_id"],
-                                producer_seq=1))
+            o.emit("local:emit", "event.degraded", event["host"],
+                   {"cause": str(e), "event_id": event["event_id"]},
+                   correlation_id=event["correlation_id"])
         except Exception:
             pass
         print("WARN: publish failed (%s) -> event stays pending in %s"
