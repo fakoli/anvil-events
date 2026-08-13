@@ -173,7 +173,13 @@ class Outbox:
         return {}
 
     # -- retention (gc) ------------------------------------------------------
-    def gc(self, archive_days=90):
+    def gc(self, archive_days=90, max_bytes=500 * 1024 * 1024):
+        """Delete archive files older than `archive_days`; guard archive size.
+
+        If the archive directory exceeds `max_bytes`, rotate to a new file and
+        emit an `event.degraded` record (no silent growth). Returns a dict of
+        what happened.
+        """
         cutoff = time.time() - archive_days * 86400
         removed = 0
         for fn in os.listdir(self.archive_dir):
@@ -181,7 +187,27 @@ class Outbox:
             if os.path.getmtime(p) < cutoff:
                 os.remove(p)
                 removed += 1
-        return removed
+        # size guard
+        total = sum(os.path.getsize(os.path.join(self.archive_dir, f))
+                    for f in os.listdir(self.archive_dir)
+                    if f.endswith(".jsonl"))
+        rotated = False
+        degraded = None
+        if total > max_bytes:
+            # rotate: rename current day archive to a timestamped overflow
+            day = utcnow_iso()[:10]
+            src = os.path.join(self.archive_dir, day + ".jsonl")
+            if os.path.exists(src):
+                dst = os.path.join(self.archive_dir,
+                                   "%s.%d.jsonl" % (day, int(time.time())))
+                os.replace(src, dst)
+                rotated = True
+            degraded = make_event("local:gc", "event.degraded", "local",
+                                  {"cause": "archive size %d > %d"
+                                   % (total, max_bytes)})
+            self.append(degraded)
+        return {"removed": removed, "rotated": rotated,
+                "size": total, "degraded": (degraded or {}).get("event_id")}
 
 
 class TargetQueue:

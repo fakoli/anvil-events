@@ -4,12 +4,13 @@
 > is done / what is next" across context compactions. See AGENTS.md §3.
 
 - **Current milestone:** M2 (finish) — Core CLI + outbox + JetStream + degraded + gc
-- **Current commit:** 9cee593 (public main; daemon + deploy/ added)
-- **In progress:** M2-finish items — JetStream stream/consumer config, dedup
-  publish (event_id), `event.degraded` wiring, gc size guard
-- **Open review:** none currently (M1 review loop closed with APPROVE)
-- **Next action:** implement M2-finish, then PR + merge + adversarial review
-- **Tests/quality:** 26 pass · ruff clean (expected baseline for M2-finish)
+- **Current commit:** [SET AT COMMIT] (public main)
+- **In progress:** M2-finish done (JetStream HPUB dedup publish, gc size guard +
+  rotate + event.degraded, degraded-on-emit-failure). Awaiting adversarial
+  review of the merged M2.
+- **Open review:** pending GPT-5.6 adversarial review of M2-finish (dispatch after commit)
+- **Next action:** dispatch review → fix feedback → update STATE → M3
+- **Tests/quality:** 31 pass · ruff clean
 - **Notes:** deploy daemon on Mini (launchd) done + verified (KeepAlive).
   nats-server is NOT yet a persistent service (gap → fix in M2-finish or M5).
 

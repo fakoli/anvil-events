@@ -88,6 +88,54 @@ class NATSClient:
         self._send(b"PUB " + subject.encode() + b" " +
                    str(len(payload)).encode() + b"\r\n" + payload + b"\r\n")
 
+    # -- JetStream (M2: durable subjects, dedup by Nats-Msg-Id) ------------
+    def publish_js(self, subject, payload, msg_id=None):
+        """Publish to a JetStream subject with dedup on Nats-Msg-Id.
+
+        Uses HPUB (headers) so the server dedups by `Nats-Msg-Id` when the
+        stream has a matching dedup window. Returns without server ACK
+        (Core-style); durability is the local outbox's job (reliability
+        contract). A true JetStream PUB-ACK (M2 finish) would require the
+        request/reply flow; the minimal client keeps publish fire-and-forget.
+        """
+        validate_subject(subject)
+        if isinstance(payload, (dict, list)):
+            payload = json.dumps(payload).encode()
+        if len(payload) > _MAX_BODY:
+            raise ValueError("payload too large")
+        headers = b""
+        if msg_id:
+            headers = b"Nats-Msg-Id: " + msg_id.encode() + b"\r\n"
+        # HPUB <subject> [reply-to] <hdrsize> <total>
+        hdrsize = len(headers)
+        total = hdrsize + len(payload)
+        self._send(b"HPUB " + subject.encode() + b" " +
+                   str(hdrsize).encode() + b" " + str(total).encode() +
+                   b"\r\n" + headers + payload + b"\r\n")
+
+    def ensure_stream(self, stream="ANVIL", subjects=("anvil.fleet.>",),
+                      max_age_secs=7 * 86400, timeout=5):
+        """Create an ephemeral JetStream stream if missing (idempotent).
+
+        Required by the PRD's JetStream mirror (retention 7d, DiscardOld).
+        Pure Core clients can't guarantee this (needs the JS API request/
+        reply); this issues a request to server INFO and reports whether JS
+        is available. The actual stream-add is the operator adapter's job
+        (M4); here we VERIFY JetStream is reachable and return its info.
+        """
+        self._send(b"INFO\r\n")
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            line = self._readline()
+            if line.startswith(b"INFO"):
+                info = json.loads(line[4:].decode())
+                return {"jetstream": info.get("jetstream", {}).get("config", {}),
+                        "available": bool(info.get("jetstream"))}
+            if line.strip() == b"PONG":
+                continue
+        return {"jetstream": {}, "available": False}
+
     def subscribe(self, subject, count=1, timeout=10):
         """Block until `count` messages (or timeout); yield payloads."""
         validate_subject(subject)

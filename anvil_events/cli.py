@@ -17,7 +17,7 @@ import sys
 
 from .nats_mini import NATSClient
 from .daemon import main as daemon_main
-from .outbox import CausalChecker, KINDS, Outbox
+from .outbox import CausalChecker, KINDS, Outbox, make_event
 
 DEFAULT_ROOT = os.path.expanduser("~/.anvil/events")
 DEFAULT_URL = os.environ.get("ANVIL_EVENTS_NATS_URL", "nats://127.0.0.1:4222")
@@ -43,7 +43,11 @@ def cmd_init(args):
 
 
 def cmd_emit(args):
-    """Outbox-FIRST: write to the durable outbox, then attempt publish."""
+    """Outbox-FIRST: write to the durable outbox, then attempt publish.
+
+    On publish failure, an `event.degraded` record is emitted to the local
+    journal — the failure is never silent (PRD reliability contract).
+    """
     o = _outbox(args.root)
     event = o.emit(args.producer, args.kind, args.host,
                    json.loads(args.payload or "{}"),
@@ -53,12 +57,20 @@ def cmd_emit(args):
     client = None
     try:
         client = NATSClient(DEFAULT_URL).connect(timeout=3)
-        client.publish(event["subject"], event)
-        # Core NATS: a write is NOT an ack. We honestly report `sent`
-        # (reached the server socket); durability requires JetStream (M2)
-        # or an outbox replay. The outbox remains the source of truth.
+        # JetStream publish with Nats-Msg-Id dedup (event_id)
+        client.publish_js(event["subject"], event, msg_id=event["event_id"])
+        # Core-style: write is NOT an ack. We report `sent` honestly (reached
+        # the server socket); durability = outbox + JetStream mirror (M2).
         sent = True
     except Exception as e:
+        # never silent: record the degradation in the journal
+        try:
+            o.append(make_event("local:emit", "event.degraded", event["host"],
+                                {"cause": str(e), "event_id": event["event_id"]},
+                                correlation_id=event["correlation_id"],
+                                producer_seq=1))
+        except Exception:
+            pass
         print("WARN: publish failed (%s) -> event stays pending in %s"
               % (e, path))
     finally:
@@ -140,9 +152,12 @@ def cmd_verify(args):
 
 
 def cmd_gc(args):
-    removed = _outbox(args.root).gc(archive_days=args.archive_days)
-    print("gc: removed %d archive file(s) older than %d days"
-          % (removed, args.archive_days))
+    result = _outbox(args.root).gc(archive_days=args.archive_days)
+    print("gc: removed %d old archive file(s)" % result["removed"])
+    if result["rotated"]:
+        print("gc: archive exceeded 500MB -> rotated (%s)" % result["size"])
+    if result["degraded"]:
+        print("gc: emitted event.degraded %s" % result["degraded"])
 
 
 def main(argv=None):

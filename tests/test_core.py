@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from anvil_events.outbox import (  # noqa: E402
-    CausalChecker, KINDS, Outbox, TargetQueue, make_event)
+    CausalChecker, KINDS, Outbox, TargetQueue, make_event, utcnow_iso)
 
 
 class TestEnvelope(unittest.TestCase):
@@ -210,10 +210,16 @@ class TestCLISequence(unittest.TestCase):
             self._run_emit(root, None)
             self._run_emit(root, None)
             o = Outbox(root)
-            seqs = [e["producer_seq"] for e in o.read_pending()]
-            self.assertEqual(len(seqs), 2)
+            originals = [e for e in o.read_pending()
+                         if e["kind"] == "host.status"]
+            seqs = [e["producer_seq"] for e in originals]
+            self.assertEqual(len(seqs), 2, "two originals expected")
             self.assertEqual(len(set(seqs)), 2, "event_ids must be unique")
             self.assertTrue(all(s >= 1 for s in seqs))
+            # degraded records were journaled too (never-silent contract)
+            degraded = [e for e in o.read_pending()
+                        if e["kind"] == "event.degraded"]
+            self.assertGreaterEqual(len(degraded), 2)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -353,6 +359,73 @@ class TestDaemonGate(unittest.TestCase):
         e = make_event("p1", "serve.up", "node-a", {})
         e["version"] = 999
         self.assertFalse(EventsDaemon._valid(e))
+
+
+class TestJetStreamPublish(unittest.TestCase):
+    """M2: HPUB with Nats-Msg-Id dedup header; ensure_stream reports JS."""
+
+    def test_publish_js_sends_hpub_with_dedup_id(self):
+        from anvil_events.nats_mini import NATSClient
+        c = NATSClient()
+        captured = []
+        c._send = lambda data: captured.append(data)   # capture frames
+        c.publish_js("anvil.fleet.node-a.serve.up",
+                     {"kind": "serve.up"}, msg_id="p1:000001")
+        frame = captured[0]
+        self.assertTrue(frame.startswith(b"HPUB "))
+        self.assertIn(b"Nats-Msg-Id: p1:000001", frame)
+        # HPUB <subj> <hdrsize> <total> then headers + body
+        self.assertIn(b"anvil.fleet.node-a.serve.up", frame)
+
+    def test_publish_js_rejects_injection(self):
+        from anvil_events.nats_mini import NATSClient
+        c = NATSClient()
+        with self.assertRaises(ValueError):
+            c.publish_js("a\r\nPUB x 0\r\n", {}, msg_id="x")
+
+    def test_publish_js_oversize_rejected(self):
+        from anvil_events.nats_mini import _MAX_BODY, NATSClient
+        c = NATSClient()
+        with self.assertRaises(ValueError):
+            c.publish_js("ok.subject", b"x" * (_MAX_BODY + 1), msg_id="x")
+
+
+class TestGCSizeGuard(unittest.TestCase):
+    """M2: gc rotates + emits event.degraded when archive exceeds the cap."""
+
+    def test_gc_rotates_and_degrades_on_oversize(self):
+        root = tempfile.mkdtemp()
+        try:
+            o = Outbox(root)
+            # fill the archive with a big file (> cap)
+            import os
+            day = utcnow_iso()[:10]
+            with open(os.path.join(root, "archive", day + ".jsonl"), "w") as f:
+                f.write("x" * 600)     # small but cap is tiny for the test
+            result = o.gc(archive_days=90, max_bytes=100)
+            self.assertTrue(result["rotated"], result)
+            self.assertTrue(result["degraded"], "must emit event.degraded")
+            # the degraded event is in the pending outbox now
+            kinds = [e["kind"] for e in o.read_pending()]
+            self.assertIn("event.degraded", kinds)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_gc_removes_old_archive(self):
+        root = tempfile.mkdtemp()
+        try:
+            o = Outbox(root)
+            # a file with a very old mtime
+            import os
+            import time
+            old = os.path.join(root, "archive", "2020-01-01.jsonl")
+            with open(old, "w") as f:
+                f.write("{}")
+            os.utime(old, (time.time() - 400 * 86400,) * 2)
+            result = o.gc(archive_days=90, max_bytes=10 ** 9)
+            self.assertEqual(result["removed"], 1)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":
