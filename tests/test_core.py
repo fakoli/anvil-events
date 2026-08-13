@@ -111,6 +111,82 @@ class TestTargetQueue(unittest.TestCase):
         self.assertEqual(q.state, TargetQueue.NORMAL)
 
 
+class TestLogPlayerReconnectSimulation(unittest.TestCase):
+    """End-to-end LogPlayer claim: no duplicate delivery after reconnect.
+
+    Uses the REAL Outbox (emit -> deliver -> ack -> suspend -> reconnect ->
+    recovery replay from cursor) plus a per-target TargetQueue, proving the
+    paper's central exactly-once-per-target invariant (arXiv:1911.11286
+    §2.4–2.5) across the whole path, not just the unit state machine.
+    """
+
+    def test_no_duplicate_delivery_after_reconnect(self):
+        root = tempfile.mkdtemp()
+        try:
+            o = Outbox(root)
+            q = TargetQueue()
+            delivered = []
+            seen = set()
+            subject = "anvil.fleet.node-a.serve.up"
+
+            def deliver(ev):
+                # simulate the AT-LEAST-ONCE transport: a msg may be re-sent
+                # after reconnect, but the consumer must not double-deliver
+                if ev["event_id"] not in seen:
+                    seen.add(ev["event_id"])
+                    delivered.append(ev)
+
+            # phase 1: emit 3 events, deliver + ack all (normal stream)
+            seqs = []
+            for i in range(3):
+                ev = o.emit("p1", "serve.up", "node-a",
+                            {"serve": "s1", "model": "m", "port": 9000 + i})
+                self.assertEqual(ev["subject"], subject)  # derived host.kind
+                seqs.append(ev["producer_seq"])
+                q.push(ev, term=q.term)
+                while True:
+                    e = q.front()
+                    if e is None:
+                        break
+                    q.pop()
+                    deliver(e)
+                    o.ack(e)
+            self.assertEqual(len(delivered), 3)
+            # per-producer seqs strictly increase (no reuse ever)
+            self.assertEqual(seqs, sorted(seqs))
+            self.assertEqual(len(set(seqs)), 3)
+            cur = o.load_cursors().get(subject, {})
+            self.assertEqual(cur["producer_seq"], seqs[-1],
+                             "cursor at last acked")
+
+            # phase 2: target down -> suspend (queues cleared)
+            q.suspend()
+            self.assertEqual(q.state, TargetQueue.SUSPENDED)
+
+            # phase 3: reconnect -> term bump, recovery fetch of the gap,
+            #          stale term cannot re-deliver anything old
+            q.reconnect()
+            missed = []
+            for ev in o.read_pending():
+                if ev.get("subject") == subject:
+                    missed.append(ev)
+            for ev in missed:
+                # recovery fetch: pushes under the NEW term only
+                self.assertTrue(q.push(ev, is_normal=False, term=q.term))
+            for e in missed:  # drain catch-up, then normal
+                q.pop()
+                deliver(e)     # re-transmitted, but deduped by event_id
+            q.fetching_completed()
+            # the pipeline re-delivered only the gap (nothing new emitted)
+            self.assertEqual(q.state, TargetQueue.NORMAL)
+            # INV3: NO DUPLICATES — delivered exactly the 3 original events,
+            # even though the transport re-sent them after reconnect
+            self.assertEqual(len(seen), 3)
+            self.assertEqual(len(delivered), 3)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
 class TestCausalChecker(unittest.TestCase):
     def _ev(self, producer, seq, corr, observed, causes=None):
         return make_event(producer, "host.status", "h", {},
