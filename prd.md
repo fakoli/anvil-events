@@ -175,7 +175,9 @@ distributed transaction. The concrete semantics:
    set up CI (lint, unit, schema conformance).
 2. **M2 — Core CLI (stdlib) + outbox.** `anvil events pub/sub/replay/status`
    with local outbox (fsync'd JSONL), retry/backoff, degraded status; JetStream
-   stream/consumer config; hermetic tests (fakes, no network).
+   stream/consumer config; hermetic tests (fakes, no network). **Includes the
+   `serve` daemon verb (subscriber + journal) and `deploy/` sample runtimes —
+   launchd/systemd units + Dockerfile + compose (ADR-0002).**
 3. **M3 — anvil-serving `[events]` seam.** Outbox-first best-effort publish
    after lifecycle commands; compatible with M2; docs + CLI audit; tests.
 4. **M4 — Private operator adapter.** Real NATS publisher (dev on node-b),

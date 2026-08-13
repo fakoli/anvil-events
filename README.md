@@ -49,12 +49,27 @@ That's a push-on-event problem, not a multi-writer consensus problem — NATS
 - **Adapters** — anvil + anvil-serving each get an optional `events` extra
   that shells out to this tool if present. Best-effort, never blocking.
 
+## Deployment
+
+anvil-events is **one artifact, two runtimes** (ADR-0002): `anvil events serve`
+runs as a **native daemon** on hosts without Docker (launchd on macOS, systemd
+on Linux) or as a **thin container** where a container runtime is already
+required (Windows + Docker Desktop). The journal root (outbox/archive/cursors)
+is volume-mounted in container mode and lives on the host — never inside the
+container. The same code path serves both.
+
+- Daemon: `anvil events serve` + sample launchd/systemd units in `deploy/`
+- Container: `deploy/Dockerfile` + `deploy/compose.yml` (volume + env)
+- Broker: nats-server co-deploys the same way per host; cross-host reachable
+  over tailnet
+
 ## CLI (planned)
 
 ```
 anvil events pub <subject> '<json>'      # publish (default nats://127.0.0.1:4222)
 anvil events sub <subject> [--count N]   # subscribe (bounded)
 anvil events emit <kind> --host H ...      # outbox-first + publish
+anvil events serve                        # daemon (subscriber + journal)
 anvil events replay [--lines N]           # replay the journal
 anvil events verify --root <dir>          # causal-consistency check
 ```
