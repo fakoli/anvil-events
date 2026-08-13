@@ -3,14 +3,15 @@
 > Updated at every milestone boundary. The single source of truth for "what
 > is done / what is next" across context compactions. See AGENTS.md §3.
 
-- **Current milestone:** M2 (finish) — awaiting re-review of review fixes
-- **Current commit:** [SET AT COMMIT] (public main)
-- **In progress:** M2 re-review #2 fixes done (doc honesty M4, real
-  ensure_stream probe, ack/gc flock). Awaiting GPT-5.6 re-review #2.
-- **Open review:** re-review #1 returned REQUEST CHANGES (3 residual: doc
-  overclaim, ensure_stream nonfunctional, cross-process lock); all fixed
-- **Next action:** re-review verdict → fix any residual → update STATE → M3
-- **Tests/quality:** 37 pass · ruff clean · live ensure_stream + HPUB verified
+- **Current milestone:** M3 — anvil-serving `[events]` seam (in fakoli/anvil-serving)
+- **Current commit:** e84dd92 (anvil-events main; M2 APPROVED)
+- **In progress:** M2 ✅ complete (final gate APPROVE, deleg_e5afc93e, 2026-08-12).
+  M3 starting: config-gated [events] seam in anvil-serving lifecycle commands
+  (serves up/down, profile enter/leave, promote) -> shell out to anvil events
+  emit, outbox-first, best-effort, stdlib-only.
+- **Open review:** none (M2 closed APPROVE)
+- **Next action:** implement M3 seam in ~/anvil-serving-t007, PR + merge, adversarial review (boundary rule: code correctness only)
+- **Tests/quality:** anvil-events 37 pass · ruff clean (M2 baseline). anvil-serving suite must stay green.
 - **Notes:** deploy daemon on Mini (launchd) done + verified (KeepAlive).
   nats-server is NOT yet a persistent service (gap → fix in M2-finish or M5).
 
