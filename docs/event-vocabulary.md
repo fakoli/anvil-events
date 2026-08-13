@@ -3,7 +3,10 @@
 Versioned, append-only lifecycle events for the Anvil family. A single
 `anvil-events` JSON document is the contract; `version` is the schema version,
 `kind` is enumerated, `subject` is the NATS-style hierarchical topic,
-`payload` is free-form JSON describing the change.
+`payload` is a per-kind allowlisted JSON object. Unknown top-level payload keys
+or incorrect scalar types are rejected by the producer and the gateway ingest
+gate; nested state objects on `divergence` are recursively redacted before
+fact storage.
 
 ## Event envelope (v1 — normative)
 
@@ -28,9 +31,14 @@ Versioned, append-only lifecycle events for the Anvil family. A single
     "repo": "operator-repo",
     "repo_rev": "0000000",
     "repo_synced": true
-  }
+  },
+  "causes": []
 }
 ```
+
+`causes` is an optional v1 array of explicit causal predecessor event IDs.
+New producers emit an empty array; consumers accept older v1 envelopes that
+omit it.
 
 ## Kinds (canonical, frozen)
 
@@ -69,10 +77,14 @@ and host-wide subscriptions.
 - **Producer-local outbox** (authoritative): append-only JSONL
   `events/outbox/<YYYY-MM-DD>.jsonl`, fsync'd on write, per producer.
   This is the durable record that the change happened.
-- **JetStream mirror** (fleet, PLANNED M2): replicated subjects for late
-  subscribers and multi-host replay; retention 7d / N events (configurable).
-  M1 ships the local outbox + archive only (at-least-once via Core NATS).
-- **Replay:** `anvil events replay [--since]` reads outbox-first, then
-  JetStream. Per-producer order only; duplicates resolved by `event_id`.
+- **JetStream mirror** (fleet): `deploy/nats-stream.json` defines the
+  file-backed `ANVIL` stream over `anvil.fleet.>` with 7-day retention and
+  `Nats-Msg-Id` deduplication.
+- **Delivery:** producers retain an event in the local outbox until a positive
+  JetStream PubAck. The daemon retries pending entries after reconnect and
+  archives them only after durable stream storage is acknowledged.
+- **Replay:** local replay combines producer outbox/archive and the deduplicated
+  subscriber journal. Fleet late-subscriber history remains in JetStream for
+  seven days; per-producer order only, duplicates resolved by `event_id`.
 - **Rotation/retention:** outbox rotated on completion (published entries move
   to `events/archive/`); policy in ADR-0001.

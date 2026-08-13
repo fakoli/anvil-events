@@ -106,11 +106,10 @@ distributed transaction. The concrete semantics:
 
 **Retention (concrete).**
 
-- In M2 the durable record is the **local outbox** (fsync'd append); entries
-  move to `events/archive/` via `ack()` when a consumer confirms them. The
-  JetStream mirror + server PUB-ACK ("pending until acked by JetStream") and
-  the retry-with-backoff producer path are **M4** (operator adapter) — M2
-  reports `sent` on socket write and keeps the record in the outbox.
+- The durable producer record is the **local outbox** (fsync'd append). An
+  entry moves to `events/archive/` only after a positive JetStream PubAck.
+  `Nats-Msg-Id=event_id` makes retries idempotent; the daemon retries pending
+  entries after reconnect and health exposes retry/ack/broker state.
 - Archive files are retained **90 days** and then deleted by a daily sweep
   (`anvil events gc` / the operator cron). JetStream stream retention: **7
   days** of history for late subscribers (configurable, M4), with `max_age` +
@@ -119,9 +118,9 @@ distributed transaction. The concrete semantics:
 - No event is deleted from the archive before its retention age; the sweep
   logs deletions to the day's journal line.
 - Size guard: if the archive exceeds 500 MB, the sweep rotates the current-day
-  file and flags `event.degraded` (rotation + alerting; the rotated file stays
-  in `archive/` under the long-term retention policy; true cap enforcement is
-  M4).
+  file and flags `event.degraded`. Only files older than the 90-day floor may
+  be removed. If retained young history prevents reaching the cap, GC returns
+  nonzero with `unresolved_oversize` rather than violating retention.
 
 ## Requirements
 
@@ -140,7 +139,7 @@ distributed transaction. The concrete semantics:
 - **R003 — Subscribe from anywhere.** `anvil events sub <subject>` receives
   events; `--count`/`--timeout` for bounded use.
 - **R004 — Durable journal + outbox.** The outbox is the authoritative local
-  journal (IMPLEMENTED, M1); JetStream (NATS, PLANNED M4) provides durable
+  journal; the checked-in JetStream stream configuration provides durable
   server-side subjects for late subscribers and multi-host replay. Journal
   authority is the **producer's local outbox**; JetStream is a replicated
   mirror for fleet consumers. Both are append-only, rotation + retention
@@ -148,7 +147,8 @@ distributed transaction. The concrete semantics:
 - **R005 — the gateway/node-b adapter (validated).** A lightweight subscriber on node-b
   ingests `anvil.fleet.>` into the gateway fact_store/memory via a script + cron,
   but only after validating `producer`/`event_id`/kind against the vocabulary
-  and a payload allowlist; forged/unknown events are dropped, not stored.
+  and configured producer + payload allowlists; forged/unknown/unauthorized
+  events are dropped, not stored.
 - **R006 — Repo-sync event.** After a promotion that changes the operator home,
   the commit-push (config-adopt) emits `config.adopted` + `repo.synced` sharing
   a `correlation_id`; the transaction links them (the promote either yields
@@ -200,8 +200,9 @@ distributed transaction. The concrete semantics:
 
 - **O1 — Transport:** NATS JetStream (chosen; proven spike) vs pure
   tailnet+git-bundle. JetStream is the default; revisit if a host cannot run it.
-- **O2 — Journal home:** producer-local outbox (authoritative) + JetStream
-  mirror (fleet). Retention: default 30d or N events; operator-configurable.
+- **O2 — Journal home:** resolved as producer-local outbox (authoritative) +
+  JetStream mirror (fleet). Server history defaults to seven days; local
+  archive retention defaults to 90 days.
 - **O3 — Repo-vs-journal precedence** when they disagree: journal wins for
   *what happened*; repo wins for *desired*; divergence is a recorded event.
   Needs operator sign-off.

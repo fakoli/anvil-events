@@ -1,7 +1,7 @@
 # ADR-0001 — anvil-events: fleet lifecycle event bus and journal
 
-- **Status:** Revised after second-model review (2026-08-12; Reject → revised).
-  Operator + final review pending.
+- **Status:** Accepted; implemented through M1–M5 and post-v1.0 correction
+  reviews.
 - **Date:** 2026-08-12
 - **Relates to:** anvil (orchestration), anvil-serving (serving); ADR-0035
   (config reconciliation) and ADR-0036 (voice relocation) in anvil-serving
@@ -42,8 +42,8 @@ This revision absorbs those findings.
    remains the declared spec. A live-vs-repo mismatch is a *recorded*
    `divergence` event, never an automatic correction.
 3. **Durability: local-first outbox + JetStream mirror.**
-   *Status: outbox-first local durability is IMPLEMENTED (M1); the JetStream
-   mirror is PLANNED (M2) and not yet implemented.*
+   *Status: implemented. The local outbox is authoritative producer history;
+   the checked-in JetStream stream is the seven-day fleet mirror.*
    - The producer's **local transactional outbox** (fsync'd append-only JSONL)
      is the authoritative record; write it BEFORE publishing.
    - An outbox write failure while enabled **fails the operation** (no silent
@@ -51,10 +51,10 @@ This revision absorbs those findings.
    - A journaled-but-undelivered event is `pending`/`failed`, surfaced via
      `anvil events status` and an `event.degraded` event — never silently
      dropped.
-   - **JetStream** (NATS) is the fleet durable mirror for late subscribers +
-     multi-host replay; stream/consumer policy (retention 30d / N events, ACK,
-     dedup on `event_id`) defined in the repo, with outage/restart/late-consumer
-     acceptance tests.
+   - **JetStream** (NATS) is the fleet durable mirror. The checked-in `ANVIL`
+     stream uses file storage, seven-day retention, `DiscardOld`, and
+     `Nats-Msg-Id=event_id` deduplication. Producers archive only after a
+     positive PubAck; the daemon retries pending events after reconnect.
    - "No event" is distinguishable from "delivery failed": outbox empty + no
      degraded = nothing happened; non-empty outbox = delivery pending/failed.
 4. **Transport: NATS JetStream.** nats-server 2.14.x, loopback where possible,

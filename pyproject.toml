@@ -13,7 +13,7 @@ authors = [{ name = "fakoli" }]
 dependencies = []   # stdlib-only by design
 
 [project.optional-dependencies]
-dev = ["pytest", "coverage>=7.6", "ruff==0.11.12"]
+dev = ["pytest", "coverage>=7.6", "jsonschema[format]>=4.23", "ruff==0.11.12"]
 
 [tool.ruff]
 # Explicit rule scope (mirrors anvil-serving practice): do not rely on
@@ -36,3 +36,7 @@ anvil-events = "anvil_events.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["anvil_events*"]
+
+[tool.setuptools.data-files]
+"share/anvil-events/schemas" = ["schemas/events-v1.json"]
+"share/anvil-events/deploy" = ["deploy/nats-stream.json"]

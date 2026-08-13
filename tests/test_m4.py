@@ -1,11 +1,14 @@
 """M4 tests: `anvil events sync-repo` (commit-push adapter) + `ingest` (validated ingestion)."""
 
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from anvil_events import cli, ingest
+from anvil_events.ingest import fact_store_add
 from anvil_events.outbox import Outbox, make_event
 
 
@@ -127,6 +130,16 @@ class TestSyncRepo(unittest.TestCase):
 class TestIngest(unittest.TestCase):
     """ingest: validated, deduplicated ingestion into the journal/fact store."""
 
+    def setUp(self):
+        self.allowed = mock.patch.dict(
+            os.environ, {"ANVIL_EVENTS_ALLOWED_PRODUCERS":
+                         "p1,remote:p1,node-a:serves"},
+        )
+        self.allowed.start()
+
+    def tearDown(self):
+        self.allowed.stop()
+
     def _write_event(self, root, ev):
         o = Outbox(str(root))
         o.append(ev)
@@ -156,32 +169,163 @@ class TestIngest(unittest.TestCase):
             self.assertEqual(len(stored), 1)
             self.assertEqual(stored[0]["kind"], "serve.up")
 
+    def test_duplicate_event_id_is_ingested_once_across_stores(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "root"
+            root.mkdir()
+            o = Outbox(str(root))
+            ev = make_event("p1", "host.status", "node-a",
+                            {"host": "node-a", "reachable": True})
+            o.append(ev)
+            o.append_journal(ev)
+            stored = []
+            cli.cmd_ingest(str(root),
+                           fact_store=lambda event: stored.append(event) or event)
+            self.assertEqual([event["event_id"] for event in stored],
+                             [ev["event_id"]])
+
+    def test_default_store_is_idempotent_across_ingest_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "root"
+            root.mkdir()
+            ev = make_event("p1", "host.status", "node-a",
+                            {"host": "node-a", "reachable": True})
+            Outbox(str(root)).append_journal(ev)
+            self.assertEqual(cli.cmd_ingest(str(root)), 0)
+            self.assertEqual(cli.cmd_ingest(str(root)), 0)
+            facts = [line for line in (root / "facts.jsonl").read_text().splitlines()
+                     if line.strip()]
+            self.assertEqual(len(facts), 1)
+
+    def test_incomplete_or_inconsistent_envelope_is_rejected(self):
+        from anvil_events.ingest import validate_event
+
+        ev = make_event("p1", "host.status", "node-a",
+                        {"host": "node-a", "reachable": True})
+        for field in ("event_id", "producer", "producer_seq", "host",
+                      "subject", "schema", "observed_at", "emitted_at"):
+            broken = dict(ev)
+            broken.pop(field)
+            self.assertFalse(validate_event(broken)[0], field)
+        mismatched = dict(ev)
+        mismatched["subject"] = "anvil.fleet.node-b.host.status"
+        self.assertFalse(validate_event(mismatched)[0])
+        for field, value in (
+            ("schema", "https://invalid.example/schema"),
+            ("host", "../escape"),
+            ("observed_at", "not-a-date"),
+            ("producer_seq", 0),
+            ("causes", [""]),
+            ("correlation_id", 42),
+        ):
+            broken = dict(ev)
+            broken[field] = value
+            self.assertFalse(validate_event(broken)[0], field)
+        for missing in ("version", "correlation_id"):
+            broken = dict(ev)
+            broken.pop(missing)
+            self.assertFalse(validate_event(broken)[0], missing)
+        date_only = dict(ev)
+        date_only["observed_at"] = "2026-08-13"
+        self.assertFalse(validate_event(date_only)[0])
+        extra = dict(ev)
+        extra["unexpected"] = True
+        self.assertFalse(validate_event(extra)[0])
+        producer_control = dict(ev)
+        producer_control["producer"] = "\nforged"
+        producer_control["event_id"] = "\nforged:000001"
+        self.assertFalse(validate_event(producer_control)[0])
+
+    def test_v1_without_optional_causes_remains_compatible(self):
+        from anvil_events.ingest import validate_event
+
+        event = make_event("p1", "host.status", "node-a",
+                           {"host": "node-a", "reachable": True})
+        event.pop("causes")
+        self.assertEqual(validate_event(event), (True, ""))
+
     def test_false_boolean_required_fields_accepted(self):
         # Reviewer M4-1: `ok=False` / `reachable=False` are VALID failure-state
         # events; required-field checking must NOT use truthiness.
         from anvil_events.ingest import validate_event
-        ok, reason = validate_event({
-            "version": 1, "kind": "repo.synced", "host": "node-a",
-            "payload": {"repo": "r", "ok": False},
-        })
+        ok, reason = validate_event(make_event(
+            "p1", "repo.synced", "node-a", {"repo": "r", "ok": False},
+        ))
         self.assertTrue(ok, f"False bool must be valid: {reason}")
-        ok, reason = validate_event({
-            "version": 1, "kind": "host.status", "host": "node-a",
-            "payload": {"host": "h", "reachable": False},
-        })
+        ok, reason = validate_event(make_event(
+            "p1", "host.status", "node-a",
+            {"host": "h", "reachable": False},
+        ))
         self.assertTrue(ok, f"False bool must be valid: {reason}")
+
+    def test_payload_allowlist_rejects_unknown_keys_and_wrong_types(self):
+        from anvil_events.ingest import fact_store_add, validate_event
+
+        forged = make_event(
+            "remote:p1", "host.status", "node-a",
+            {"host": 123, "reachable": "yes",
+             "arbitrary": {"command": "run"}},
+        )
+        ok, reason = validate_event(forged)
+        self.assertFalse(ok)
+        self.assertIn("unknown fields", reason)
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(fact_store_add(os.path.join(d, "facts.jsonl"),
+                                              forged))
+
+        wrong_type = make_event(
+            "remote:p1", "host.status", "node-a",
+            {"host": "node-a", "reachable": "yes"},
+        )
+        ok, reason = validate_event(wrong_type)
+        self.assertFalse(ok)
+        self.assertIn("must be a boolean", reason)
+
+    def test_structurally_valid_unauthorized_producer_is_not_stored(self):
+        from anvil_events.ingest import fact_store_add, validate_event
+
+        event = make_event(
+            "intruder", "host.status", "node-a",
+            {"host": "node-a", "reachable": True},
+        )
+        allowed = frozenset(["p1"])
+        self.assertEqual(validate_event(event, allowed_producers=allowed),
+                         (False, "producer is not authorized"))
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "facts.jsonl"
+            self.assertIsNone(fact_store_add(
+                path, event, allowed_producers=allowed,
+            ))
+            self.assertFalse(path.exists())
+
+    def test_anvil_serving_lifecycle_payloads_match_frozen_requirements(self):
+        from anvil_events.ingest import validate_event
+
+        samples = {
+            "serve.up": {"serve": "s", "model": "m", "port": 1},
+            "serve.down": {"serve": "s", "graceful": True},
+            "profile.enter": {"mode": "exclusive", "profile": "p"},
+            "profile.leave": {"mode": "exclusive", "profile": "p"},
+            "promote.applied": {"tier": "primary", "model": "m"},
+            "promote.rolled_back": {"tier": "primary", "restored_model": "m"},
+        }
+        for kind, payload in samples.items():
+            event = make_event("node-a:serves", kind, "node-a", payload)
+            self.assertEqual(validate_event(event), (True, ""), kind)
 
     def test_sensitive_fields_are_dropped_case_insensitively(self):
         from anvil_events.ingest import fact_store_add
         with tempfile.TemporaryDirectory() as d:
             store = os.path.join(d, "facts.jsonl")
-            fact = fact_store_add(store, {
-                "version": 1, "kind": "host.status", "host": "node-a",
-                "payload": {"host": "h", "reachable": True,
-                            "Token": "secret", "API_KEY": "k", "password": "p"},
-            })
+            fact = fact_store_add(store, make_event(
+                "p1", "divergence", "node-a",
+                {"issue": "drift", "declared": {"Token": "secret",
+                                                   "API_KEY": "k",
+                                                   "password": "p",
+                                                   "kept": "yes"}},
+            ))
             self.assertIsNotNone(fact)
-            payload = fact["payload"]
+            payload = fact["payload"]["declared"]
             self.assertNotIn("Token", payload)
             self.assertNotIn("API_KEY", payload)
             self.assertNotIn("password", payload)
@@ -201,6 +345,145 @@ class TestIngest(unittest.TestCase):
             cli.cmd_ingest(str(root), fact_store=lambda ev: stored.append(ev) or ev)
             self.assertEqual(stored, [], "invalid payload must be dropped")
 
+    def test_invalid_duplicate_does_not_shadow_later_valid_event(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "root"
+            archive = root / "archive"
+            journal = root / "journal"
+            archive.mkdir(parents=True)
+            journal.mkdir()
+            valid = make_event("p1", "host.status", "node-a",
+                               {"host": "node-a", "reachable": True})
+            invalid = dict(valid)
+            invalid["subject"] = "anvil.fleet.node-b.host.status"
+            (archive / "2026-08-13.jsonl").write_text(json.dumps(invalid) + "\n")
+            (journal / "2026-08-13.jsonl").write_text(json.dumps(valid) + "\n")
+            stored = []
+            rc = ingest.cmd_ingest(
+                {"root": str(root), "count": None, "store": None},
+                fact_store=lambda ev: stored.append(ev) or ev,
+            )
+            self.assertEqual(rc, 1)
+            self.assertEqual([ev["event_id"] for ev in stored], [valid["event_id"]])
+
+    def test_nested_sensitive_payload_fields_are_removed(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as d:
+            event = make_event("p1", "divergence", "node-a", {
+                "issue": "drift",
+                "delta": {"token": "SECRET", "access_token": "SECRET",
+                           "client_secret": "SECRET", "accessToken": "SECRET",
+                           "clientSecret": "SECRET", "clientApiKey": "SECRET",
+                           "kept": [
+                    {"password": "SECRET", "db_password": "SECRET",
+                     "dbPassword": "SECRET", "value": 1},
+                ]},
+            })
+            path = Path(d) / "facts.jsonl"
+            ingest.fact_store_add(path, event)
+            fact = json.loads(path.read_text())
+            self.assertNotIn("token", fact["payload"]["delta"])
+            self.assertNotIn("access_token", fact["payload"]["delta"])
+            self.assertNotIn("client_secret", fact["payload"]["delta"])
+            self.assertNotIn("accessToken", fact["payload"]["delta"])
+            self.assertNotIn("clientSecret", fact["payload"]["delta"])
+            self.assertNotIn("clientApiKey", fact["payload"]["delta"])
+            self.assertNotIn("password", fact["payload"]["delta"]["kept"][0])
+            self.assertNotIn("db_password", fact["payload"]["delta"]["kept"][0])
+            self.assertNotIn("dbPassword", fact["payload"]["delta"]["kept"][0])
+            self.assertEqual(fact["payload"]["delta"]["kept"][0]["value"], 1)
+
+    def test_fact_store_repairs_torn_tail_before_append(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "facts.jsonl"
+            path.write_bytes(b'{"event_id":"torn"')
+            event = make_event("p1", "host.status", "node-a",
+                               {"host": "node-a", "reachable": True})
+            ingest.fact_store_add(path, event)
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual([row["event_id"] for row in rows], [event["event_id"]])
+            self.assertTrue(list(Path(d).glob("facts.jsonl.*.torn")))
+
+    def test_fact_store_first_create_fsyncs_parent_directory(self):
+        import stat
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "facts.jsonl"
+            event = make_event("p1", "host.status", "node-a",
+                               {"host": "node-a", "reachable": True})
+            real_fsync = os.fsync
+            directory_syncs = []
+
+            def track(fd):
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    directory_syncs.append(fd)
+                return real_fsync(fd)
+
+            with mock.patch("anvil_events.ingest.os.fsync", side_effect=track):
+                self.assertIsNotNone(ingest.fact_store_add(path, event))
+            self.assertGreaterEqual(len(directory_syncs), 1)
+
+    def test_fact_store_rejects_symlinked_data_and_lock_targets(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            external = root / "external"
+            external.write_text("SAFE\n")
+            event = make_event(
+                "p1", "host.status", "node-a",
+                {"host": "node-a", "reachable": True},
+            )
+            store = root / "facts.jsonl"
+            store.symlink_to(external)
+            with self.assertRaises(OSError):
+                fact_store_add(store, event, allowed_producers={"p1"})
+            self.assertEqual(external.read_text(), "SAFE\n")
+            store.unlink()
+            lock = root / "facts.jsonl.lock"
+            lock.unlink()
+            lock.symlink_to(external)
+            with self.assertRaises(OSError):
+                fact_store_add(store, event, allowed_producers={"p1"})
+            self.assertEqual(external.read_text(), "SAFE\n")
+
+    def test_unmanaged_jsonl_files_are_not_ingested(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "archive").mkdir()
+            (root / "archive" / "notes.backup.jsonl").write_text("not json\n")
+            self.assertEqual(ingest._OutboxForIngest(str(root)).read_all(), [])
+
+    def test_managed_symlink_is_not_ingested(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            journal = root / "journal"
+            journal.mkdir()
+            outside = root / "outside.jsonl"
+            outside.write_text(json.dumps(make_event(
+                "p1", "host.status", "node-a",
+                {"host": "node-a", "reachable": True},
+            )) + "\n")
+            (journal / "2026-08-13.jsonl").symlink_to(outside)
+            self.assertEqual(ingest._OutboxForIngest(str(root)).read_all(), [])
+
+    def test_symlinked_managed_directory_is_not_ingested(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "root"
+            outside = Path(d) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (outside / "2026-08-13.jsonl").write_text(json.dumps(make_event(
+                "p1", "host.status", "node-a",
+                {"host": "node-a", "reachable": True},
+            )) + "\n")
+            (root / "journal").symlink_to(outside, target_is_directory=True)
+            self.assertEqual(ingest._OutboxForIngest(str(root)).read_all(), [])
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -217,6 +500,10 @@ class TestSyncRepoRealGit(unittest.TestCase):
             subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
             subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
             subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+            # Keep the temp repository hermetic when the host's global Git
+            # config enables commit signing but has no signer on PATH.
+            subprocess.run(["git", "config", "commit.gpgsign", "false"],
+                           cwd=repo, check=True)
             (repo / "state.toml").write_text("x = 1\n")
             subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
             subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)

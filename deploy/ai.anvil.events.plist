@@ -24,6 +24,8 @@
     <dict>
         <key>ANVIL_EVENTS_NATS_URL</key>
         <string>nats://127.0.0.1:4222</string>
+        <key>ANVIL_EVENTS_ALLOWED_PRODUCERS</key>
+        <string>REPLACE_WITH_COMMA_SEPARATED_PRODUCERS</string>
     </dict>
 
     <key>StandardOutPath</key>

@@ -10,6 +10,7 @@ services:
       - anvil-events-root:/var/lib/anvil/events
     environment:
       ANVIL_EVENTS_NATS_URL: nats://127.0.0.1:4222
+      ANVIL_EVENTS_ALLOWED_PRODUCERS: ${ANVIL_EVENTS_ALLOWED_PRODUCERS:?set trusted producers}
       ANVIL_EVENTS_ROOT: /var/lib/anvil/events
     ports:
       - "127.0.0.1:9877:9877"   # loopback-only health

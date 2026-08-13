@@ -4,19 +4,38 @@
 > is done / what is next" across context compactions. See AGENTS.md §3.
 
 - **Current milestone:** ✅ COMPLETE — M1–M5 all approved (anvil-events v1.0)
-- **Current commit:** fb7c645 (anvil-events main; M5 APPROVED). Broker: dedicated
+- **Current commit:** 7c69b86 (review improvements pending commit; M1–M5 remain
+  approved). Broker: dedicated
   LaunchAgent `com.fakoli.nats-server` (config, JetStream, KeepAlive).
-- **In progress:** None. Full milestone chain closed: M1 public release, M2
+- **In progress:** final correction-gate review of post-v1.0 durability,
+  liveness, schema, and security improvements. Full milestone chain remains
+  closed: M1 public release, M2
   durable outbox, M3 anvil-serving seam (PR #402), M4 operator adapter +
   Hermes ingestion, M5 retention enforcement + observability + broker
   persistence. All gates APPROVE.
-- **Open review:** none.
+- **Open review:** exact-tree independent correction gates on the final
+  candidate. The final gate found one remaining pathname-based dirfd gap
+  (list-then-reopen by path in repair/pending/GC) — fixed by pinning every
+  managed directory fd for list/stat/open/replace/unlink, converting all
+  quarantine writes to a pinned-dirfd helper, and adding two dir-swap race
+  regressions. A follow-up gate then found the GC deletion path still fsynced
+  the archive directory via a pathname reopen (`_fsync_directory`); fixed by
+  fsyncing the pinned archive dirfd and removing the dead helper, with a
+  regression proving every directory fsync targets the original pinned inode
+  across a path swap. A fresh exact-tree gate is running on the corrected
+  tree.
 - **Next action:** maintain — periodic `anvil events gc` / cron ingestion
   monitor degraded signal; consider rolling the private operator wrapper
   into a standing deployment.
-- **Tests/quality:** 50 pass · ruff clean · CI green (fb7c645).
-- **Notes:** host daemon healthy incl. degraded observability
-  (`pending:6` = unpublished events visible); broker persistent (KeepAlive
+- **Tests/quality:** 133 pass locally with JSON Schema format validation;
+  Python 3.11/3.12/3.13 compatibility and repeated-suite stress verified;
+  both independent durability/liveness probe packs pass; exact real-broker
+  framed-size and independent-durable replay probes pass; ruff and diff clean;
+  final CI pending commit.
+- **Notes:** exact-tree two-macOS-host proof verified remote PubAck/archive,
+  JetStream persistence, subscriber journaling/dedup, causal checking, and
+  validated fact ingestion. Host daemon healthy incl. PubAck/retry
+  observability (`pending:0`, broker connected); broker persistent (KeepAlive
   verified); Hermes ingestion cron `5fb3e7110183` live (validated, dedup,
   fact-store hook).
 

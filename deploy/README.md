@@ -43,9 +43,27 @@ docker compose -f deploy/compose.yml up -d --build
 nats-server follows the same rule: native daemon where no Docker (or a
 lightweight loopback broker), container where Docker is mandatory.
 
+JetStream being enabled is not sufficient: the broker must have the checked-in
+file-backed stream that captures the fleet subjects. Provision it idempotently
+with the NATS CLI after starting the broker:
+
+```bash
+nats stream add --config deploy/nats-stream.json
+nats stream info ANVIL --json
+```
+
+The contract in `deploy/nats-stream.json` is `ANVIL` → `anvil.fleet.>`, file
+storage, `DiscardOld`, 7-day history, and a 2-minute message-ID deduplication
+window. Producers retain their local outbox entry until JetStream returns a
+positive PubAck; the daemon retries pending entries after reconnect.
+
+Set `ANVIL_EVENTS_ALLOWED_PRODUCERS` to a comma-separated list of exact
+producer identities. The daemon and validated ingestion are default-deny when
+this allowlist is empty; broker publish ACLs remain defense in depth.
+
 ## Verify
 
 ```bash
 anvil events serve --help            # the verb is the same in both shapes
-curl -s http://127.0.0.1:9877/       # loopback health: {"received":N,"journaled":N,"dropped":N}
+curl -s http://127.0.0.1:9877/       # includes pending, PubAck retries, broker state
 ```

@@ -13,6 +13,7 @@ Usage:
   anvil-events ingest [--root R] [--store S] [--count N]      # validated fact ingestion (drop forged)
 """
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -21,7 +22,14 @@ from .daemon import main as daemon_main
 from .ingest import cmd_ingest, cmd_sync_repo
 from .ingest import register as register_m4
 from .nats_mini import NATSClient
-from .outbox import KINDS, CausalChecker, Outbox
+from .outbox import (
+    _ARCHIVE_JSONL,
+    _DAILY_JSONL,
+    KINDS,
+    CausalChecker,
+    Outbox,
+    iter_managed_jsonl,
+)
 
 DEFAULT_ROOT = os.path.expanduser("~/.anvil/events")
 DEFAULT_URL = os.environ.get("ANVIL_EVENTS_NATS_URL", "nats://127.0.0.1:4222")
@@ -62,11 +70,10 @@ def cmd_emit(args):
     try:
         client = NATSClient(DEFAULT_URL).connect(timeout=3)
         # JetStream publish with Nats-Msg-Id dedup (event_id)
-        client.publish_js(event["subject"], event, msg_id=event["event_id"])
-        # Core-style: write is NOT an ack. We report `sent` honestly (the
-        # event reached the server socket). Persistence to the JetStream
-        # mirror and a server PUB-ACK/retry path are the operator adapter's
-        # job (M4); in M2 the durable record is the local outbox.
+        client.publish_js(event["subject"], event, msg_id=event["event_id"],
+                          wait_ack=True, timeout=3)
+        # Archive only after JetStream confirms durable stream storage.
+        o.ack(event)
         sent = True
     except Exception as e:
         # never silent: record the degradation in the journal with a UNIQUE
@@ -91,19 +98,27 @@ def cmd_pub(args):
 
 
 def cmd_sub(args):
+    durable = args.durable or (
+        "anvil-events-cli-" + hashlib.sha256(args.subject.encode()).hexdigest()[:12]
+    )
     client = NATSClient(DEFAULT_URL).connect(timeout=3)
     try:
-        got = client.subscribe(args.subject, count=args.count,
-                               timeout=args.timeout)
+        client.bind_durable_consumer(args.stream, durable, args.subject,
+                                     timeout=3)
+        got = client.receive(count=args.count, timeout=args.timeout,
+                             subscription=f"anvil.delivery.{durable}")
+        for message in got:
+            body = message["body"]
+            try:
+                e = json.loads(body)
+                print("{} {} {}".format(e.get("event_id", "?"), e.get("kind", "?"),
+                                    e.get("subject", args.subject)))
+            except Exception:
+                print(body.decode(errors="replace")[:200])
+            if message.get("reply"):
+                client.ack(message["reply"])
     finally:
         client.close()
-    for body in got:
-        try:
-            e = json.loads(body)
-            print("{} {} {}".format(e.get("event_id", "?"), e.get("kind", "?"),
-                                e.get("subject", args.subject)))
-        except Exception:
-            print(body.decode(errors="replace")[:200])
 
 
 def cmd_status(args):
@@ -118,12 +133,9 @@ def cmd_status(args):
 def cmd_replay(args):
     o = _outbox(args.root)
     events = list(o.read_pending())
-    for fn in sorted(os.listdir(o.archive_dir)):
-        if fn.endswith(".jsonl"):
-            with open(os.path.join(o.archive_dir, fn), encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        events.append(json.loads(line))
+    events.extend(o.read_archive())
+    events.extend(o.read_journal())
+    events = list({e.get("event_id"): e for e in events}.values())
     events.sort(key=lambda e: (e.get("observed_at", ""), e.get("producer_seq", 0)))
     for e in events[-args.lines:]:
         print("{} {} {} corr={}".format(e.get("observed_at", "?")[:19],
@@ -135,17 +147,19 @@ def cmd_verify(args):
     events = []
     if os.path.isdir(args.path):
         # read BOTH outbox and archive (the full replayed journal)
-        for subdir in ("outbox", "archive"):
+        for subdir, pattern in (
+            ("outbox", _DAILY_JSONL),
+            ("archive", _ARCHIVE_JSONL),
+            ("journal", _DAILY_JSONL),
+        ):
             d = os.path.join(args.path, subdir)
-            if not os.path.isdir(d):
-                continue
-            for fn in sorted(os.listdir(d)):
-                if fn.endswith(".jsonl"):
-                    with open(os.path.join(d, fn), encoding="utf-8") as f:
-                        events += [json.loads(line_) for line_ in f if line_.strip()]
+            events.extend(iter_managed_jsonl(d, pattern))
     else:
-        with open(args.path, encoding="utf-8") as f:
-            events = [json.loads(line_) for line_ in f if line_.strip()]
+        parent, name = os.path.split(os.path.abspath(args.path))
+        pattern = _ARCHIVE_JSONL if _ARCHIVE_JSONL.fullmatch(name) else _DAILY_JSONL
+        if not pattern.fullmatch(name):
+            raise ValueError("verify input is not a managed JSONL filename")
+        events.extend(iter_managed_jsonl(parent, pattern, managed_name=name))
     events.sort(key=lambda e: (e.get("observed_at", ""), e.get("producer_seq", 0)))
     ok, err = CausalChecker.check(events)
     print(f"causal consistency: {'OK' if ok else 'VIOLATED'} ({len(events)} events)")
@@ -164,6 +178,10 @@ def cmd_gc(args):
         print("gc: archive exceeded 500MB -> rotated ({})".format(result["size"]))
     if result["degraded"]:
         print("gc: emitted event.degraded {}".format(result["degraded"]))
+    if result.get("unresolved_oversize"):
+        print("gc: archive remains above hard cap; retained history is too young")
+        return 1
+    return 0
 
 
 def main(argv=None):
@@ -185,10 +203,14 @@ def main(argv=None):
     s.add_argument("subject")
     s.add_argument("--count", type=int, default=1)
     s.add_argument("--timeout", type=int, default=10)
+    s.add_argument("--stream", default="ANVIL")
+    s.add_argument("--durable", default=None)
     serve = sub.add_parser("serve")
     serve.add_argument("--root", default=None)
     serve.add_argument("--url", default=None)
     serve.add_argument("--subject", default="anvil.fleet.>")
+    serve.add_argument("--stream", default="ANVIL")
+    serve.add_argument("--durable", default=None)
     serve.add_argument("--health-port", type=int, default=9877)
     serve.add_argument("--once", action="store_true")
     sub.add_parser("status")
@@ -207,6 +229,10 @@ def main(argv=None):
             sv += ["--root", args.root]
         if args.url:
             sv += ["--url", args.url]
+        if args.stream:
+            sv += ["--stream", args.stream]
+        if args.durable:
+            sv += ["--durable", args.durable]
         if args.once:
             sv += ["--once"]
         return daemon_main(sv)

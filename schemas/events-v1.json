@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anvil.dev/schemas/events/v1.json",
+  "title": "anvil-events v1 envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "event_id",
+    "producer",
+    "producer_seq",
+    "observed_at",
+    "emitted_at",
+    "correlation_id",
+    "schema",
+    "host",
+    "kind",
+    "subject",
+    "payload"
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "event_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*:[0-9]{6,}$"},
+    "producer": {"type": "string", "pattern": "^[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*$"},
+    "producer_seq": {"type": "integer", "minimum": 1},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "emitted_at": {"type": "string", "format": "date-time"},
+    "correlation_id": {"type": ["string", "null"]},
+    "schema": {"const": "https://anvil.dev/schemas/events/v1.json"},
+    "host": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$"},
+    "kind": {
+      "enum": [
+        "config.adopted",
+        "divergence",
+        "event.degraded",
+        "host.status",
+        "profile.enter",
+        "profile.leave",
+        "promote.applied",
+        "promote.rolled_back",
+        "repo.synced",
+        "serve.down",
+        "serve.up"
+      ]
+    },
+    "subject": {"type": "string", "pattern": "^anvil\\.fleet\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*$"},
+    "payload": {"type": "object"},
+    "causes": {"type": "array", "items": {"type": "string", "minLength": 1}}
+  },
+  "allOf": [
+    {"if": {"properties": {"kind": {"const": "config.adopted"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/configAdopted"}}}},
+    {"if": {"properties": {"kind": {"const": "divergence"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/divergence"}}}},
+    {"if": {"properties": {"kind": {"const": "event.degraded"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/eventDegraded"}}}},
+    {"if": {"properties": {"kind": {"const": "host.status"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/hostStatus"}}}},
+    {"if": {"properties": {"kind": {"enum": ["profile.enter", "profile.leave"]}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/profile"}}}},
+    {"if": {"properties": {"kind": {"const": "promote.applied"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/promoteApplied"}}}},
+    {"if": {"properties": {"kind": {"const": "promote.rolled_back"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/promoteRolledBack"}}}},
+    {"if": {"properties": {"kind": {"const": "repo.synced"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/repoSynced"}}}},
+    {"if": {"properties": {"kind": {"const": "serve.down"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/serveDown"}}}},
+    {"if": {"properties": {"kind": {"const": "serve.up"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/serveUp"}}}}
+  ],
+  "$defs": {
+    "configAdopted": {"type": "object", "additionalProperties": false, "required": ["file"], "properties": {"file": {"type": "string"}, "files": {"type": ["array", "null"], "items": {"type": "string"}}, "state": {"type": ["string", "null"]}, "repo": {"type": ["string", "null"]}, "rev": {"type": ["string", "null"]}}},
+    "divergence": {"type": "object", "additionalProperties": false, "required": ["issue"], "properties": {"issue": {"type": "string"}, "declared": {}, "live": {}, "delta": {}}},
+    "eventDegraded": {"type": "object", "additionalProperties": false, "required": ["cause"], "properties": {"cause": {"type": "string"}, "event_id": {"type": ["string", "null"]}, "file": {"type": ["string", "null"]}, "bytes": {"type": ["integer", "null"]}, "records": {"type": ["integer", "null"]}, "pending": {"type": ["integer", "null"]}}},
+    "hostStatus": {"type": "object", "additionalProperties": false, "required": ["host", "reachable"], "properties": {"host": {"type": "string"}, "reachable": {"type": "boolean"}, "gpu_used": {"type": ["number", "null"]}, "gpu_free": {"type": ["number", "null"]}}},
+    "profile": {"type": "object", "additionalProperties": false, "required": ["mode", "profile"], "properties": {"mode": {"type": "string"}, "profile": {"type": "string"}, "exclusive_target": {"type": ["string", "null"]}, "restore_group": {"type": ["string", "null"]}}},
+    "promoteApplied": {"type": "object", "additionalProperties": false, "required": ["tier", "model"], "properties": {"promotion": {"type": ["string", "null"]}, "tier": {"type": "string"}, "model": {"type": "string"}, "context": {"type": ["integer", "null"]}, "rollback": {"type": ["string", "null"]}}},
+    "promoteRolledBack": {"type": "object", "additionalProperties": false, "required": ["tier", "restored_model"], "properties": {"promotion": {"type": ["string", "null"]}, "tier": {"type": "string"}, "restored_model": {"type": "string"}}},
+    "repoSynced": {"type": "object", "additionalProperties": false, "required": ["repo", "ok"], "properties": {"repo": {"type": "string"}, "ok": {"type": "boolean"}, "committed": {"type": ["boolean", "null"]}, "pushed": {"type": ["boolean", "null"]}, "error": {"type": ["string", "null"]}}},
+    "serveDown": {"type": "object", "additionalProperties": false, "required": ["serve"], "properties": {"serve": {"type": "string"}, "graceful": {"type": ["boolean", "null"]}}},
+    "serveUp": {"type": "object", "additionalProperties": false, "required": ["serve", "model", "port"], "properties": {"serve": {"type": "string"}, "model": {"type": "string"}, "port": {"type": "integer"}, "gpu_roles": {"type": ["array", "null"], "items": {"type": "string"}}, "residency": {"type": ["string", "null"]}}}
+  }
+}

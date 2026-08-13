@@ -9,11 +9,11 @@
 
 ## Notation
 
-- `state` is the durable outbox journal (append-only JSONL, fsync'd) plus the
-  acked archive + per-target cursors.
+- `state` is the durable producer outbox (append-only JSONL, fsync'd), the
+  PubAcked archive, the deduplicated subscriber journal, and per-target cursors.
 - `TargetQueue` = per-target LogPlayer state machine (S/RF/FC/N).
 - A `degraded` event means pending > 0 (an event exists that has not been acked).
-- "Delivered to a target" = the consumer's cursor passed that event.
+- "Durably mirrored" = JetStream returned a positive PubAck for that event.
 
 ---
 
@@ -40,7 +40,8 @@ A crash between = duplicate archive entry, which consumers dedup by
 event_id. No event is ever removed before it is durably archived.
 ```
 
-**Test:** `test_ack_archive_first_then_remove_pending`.
+**Test:** `test_ack_archive_first_then_remove_pending`,
+`test_pending_archived_only_after_puback`, `test_puback_failure_keeps_pending`.
 
 ### INV3 — Duplicate prevention after reconnect (LogPlayer term)
 
@@ -86,22 +87,44 @@ Kahn.
 ### INV7 — Degraded signal is truthful
 
 ```
-Always: health reports `pending` (unacked events) and `degraded_events`
-(event.degraded records) computed live. A non-zero pending is observable
--> "no event" is distinguishable from "delivery failed".
+Always: health reports `pending` (events lacking JetStream PubAck),
+`degraded_events`, PubAck retry/ack counters, broker connection state, and the
+last bounded error. A non-zero pending is observable -> "no event" is
+distinguishable from "delivery failed".
 ```
 **Test:** `TestDaemonHealthObservability` — seeds a pending event + an
 event.degraded, asserts both appear in the health response.
 
-### INV8 — Retention never deletes non-rotated archives
+### INV9 — Producer and subscriber durability are distinct
 
 ```
-Always: gc() hard-cap eviction removes ONLY rotated-overflow siblings
-matching the epoch-suffix pattern `\d{4}-\d{2}-\d{2}\.\d{9,11}\.jsonl$`.
-Ordinary day archives and odd named files are never candidates.
+Always: receiving a fleet event appends it at most once to `journal/` by
+event_id and never creates producer-pending work on the subscriber. Producer
+pending is cleared only by a positive JetStream PubAck.
 ```
-**Test:** `test_gc_enforces_hard_cap_evicts_oldest_rotated` + odd-suffix
-survival regression.
+
+**Test:** `TestSubscriberJournal`, `TestDeliveryPump`; cross-host proof asserts
+remote pending=0/archive=1 and subscriber pending unchanged/journaled=1.
+
+### INV10 — Validation precedes idempotency
+
+```
+Always: an invalid event cannot reserve/shadow an event_id. The gateway first
+validates the complete v1 envelope, subject, kind payload, and safe tokens;
+only valid events enter event_id deduplication and fact storage.
+```
+
+**Test:** `test_invalid_duplicate_does_not_shadow_later_valid_event`, envelope
+validation regressions, and recursive sensitive-field redaction tests.
+
+### INV8 — Retention age is authoritative
+
+```
+Always: gc() never deletes any archive younger than `archive_days`. Old managed
+archives may be removed; if retained young history prevents reaching the size
+cap, GC reports `unresolved_oversize` and degradation instead of deleting it.
+```
+**Test:** young-rotation survival + bare-daily unresolved-cap regressions.
 
 ---
 
