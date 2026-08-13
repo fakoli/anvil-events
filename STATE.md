@@ -3,31 +3,26 @@
 > Updated at every milestone boundary. The single source of truth for "what
 > is done / what is next" across context compactions. See AGENTS.md §3.
 
-- **Current milestone:** ✅ COMPLETE — M1–M5 all approved (anvil-events v1.0)
-- **Current commit:** 7c69b86 (review improvements pending commit; M1–M5 remain
-  approved). Broker: dedicated
-  LaunchAgent `com.fakoli.nats-server` (config, JetStream, KeepAlive).
-- **In progress:** final correction-gate review of post-v1.0 durability,
-  liveness, schema, and security improvements. Full milestone chain remains
-  closed: M1 public release, M2
+- **Current milestone:** ✅ COMPLETE — M1–M5 all approved + post-v1.0 hardening
+  release **4d37492** deployed (ci green; exact-tree gates APPROVE).
+- **Current commit:** 4d37492 (main, pushed 2026-08-13; CI green on 3.11/3.12/
+  3.13). Broker: dedicated LaunchAgent `com.fakoli.nats-server` (config,
+  JetStream, KeepAlive).
+- **In progress:** ✅ CLOSED — post-v1.0 hardening release shipped. Full
+  milestone chain closed: M1 public release, M2
   durable outbox, M3 anvil-serving seam (PR #402), M4 operator adapter +
   Hermes ingestion, M5 retention enforcement + observability + broker
   persistence. All gates APPROVE.
-- **Open review:** exact-tree independent correction gates on the final
-  candidate. The final gate found one remaining pathname-based dirfd gap
-  (list-then-reopen by path in repair/pending/GC) — fixed by pinning every
-  managed directory fd for list/stat/open/replace/unlink, converting all
-  quarantine writes to a pinned-dirfd helper, and adding two dir-swap race
-  regressions. A follow-up gate then found the GC deletion path still fsynced
-  the archive directory via a pathname reopen (`_fsync_directory`); fixed by
-  fsyncing the pinned archive dirfd and removing the dead helper, with a
-  regression proving every directory fsync targets the original pinned inode
-  across a path swap. A fresh exact-tree gate is running on the corrected
-  tree.
+- **Open review:** ✅ CLOSED — the exact-tree correction-gate chain converged:
+  every residual blocker (pathname dirfd gap, GC post-delete pathname fsync,
+  schema/runtime parity, HPUB caps, durable identity, wire parser, handshake)
+  was fixed with regressions, and the final gate APPROVED hash 7f6c64d1 with
+  zero blockers (START=END, GC dir-swap probe all-original-inode, torn/invalid
+  probes pass).
 - **Next action:** maintain — periodic `anvil events gc` / cron ingestion
   monitor degraded signal; consider rolling the private operator wrapper
   into a standing deployment.
-- **Tests/quality:** 133 pass locally with JSON Schema format validation;
+- **Tests/quality:** 134 pass locally with JSON Schema format validation;
   Python 3.11/3.12/3.13 compatibility and repeated-suite stress verified;
   both independent durability/liveness probe packs pass; exact real-broker
   framed-size and independent-durable replay probes pass; ruff and diff clean;
