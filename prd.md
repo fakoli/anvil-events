@@ -13,15 +13,15 @@ anvil coordinates *who*, anvil-serving serves *what*, anvil-events answers
 The event log is the **journal**, never the desired state. The repo (declared
 spec) and the event log (journal of what actually happened) do not compete —
 events fill the gap that today requires a 20-minute git-archaeology session to
-answer "what's actually running on Dark?"
+answer "what's actually running on node-a?"
 
 ## Goals
 
 - **G1 — Publish on lifecycle change.** `serve.up/down`, `profile.enter/leave`,
   `promote.applied`, `config.adopted`, `repo.synced` emit a typed event.
-- **G2 — Subscribe from anywhere.** Any host (Mini, Dark, mid-mod, an agent) can
-  subscribe to subjects it cares about and react — including Hermes on Mini
-  refreshing its fact/memory on `anvil.fleet.>`.
+- **G2 — Subscribe from anywhere.** Any host (node-a, node-b, node-c, an agent)
+  can subscribe to subjects it cares about and react — including the gateway
+  host refreshing its fact/memory on `anvil.fleet.>`.
 - **G3 — Durable journal.** Events are append-only and replayable; a late
   subscriber can catch up on recent history, independent of git state.
 - **G4 — Zero hard dependency.** `anvil-events` is stdlib-only (like
@@ -72,7 +72,7 @@ failure.
 Events are **per-producer ordered**, not globally ordered. Each event carries:
 
 - `event_id` — unique (host-producer-seq), idempotent replay key.
-- `producer` — stable producer identity (host + role, e.g. `fakoli-dark:serves`).
+- `producer` — stable producer identity (host + role, e.g. `node-a:serves`).
 - `producer_seq` — monotonically increasing per producer.
 - `observed_at` / `emitted_at` — event-time vs publish-time, so clock skew is
   explicit.
@@ -133,12 +133,13 @@ distributed transaction. The concrete semantics:
 - **R003 — Subscribe from anywhere.** `anvil events sub <subject>` receives
   events; `--count`/`--timeout` for bounded use.
 - **R004 — Durable journal + outbox.** The outbox is the authoritative local
-  journal; JetStream (NATS) provides durable server-side subjects for late
-  subscribers and multi-host replay. Journal authority is the **producer's
-  local outbox**; JetStream is a replicated mirror for fleet consumers. Both
-  are append-only, rotation + retention defined (see ADR-0001).
-- **R005 — Hermes/Mini adapter (validated).** A lightweight subscriber on Mini
-  ingests `anvil.fleet.>` into Hermes fact_store/memory via a script + cron,
+  journal (IMPLEMENTED, M1); JetStream (NATS, PLANNED M2) provides durable
+  server-side subjects for late subscribers and multi-host replay. Journal
+  authority is the **producer's local outbox**; JetStream is a replicated
+  mirror for fleet consumers. Both are append-only, rotation + retention
+  defined (see ADR-0001).
+- **R005 — the gateway/node-b adapter (validated).** A lightweight subscriber on node-b
+  ingests `anvil.fleet.>` into the gateway fact_store/memory via a script + cron,
   but only after validating `producer`/`event_id`/kind against the vocabulary
   and a payload allowlist; forged/unknown events are dropped, not stored.
 - **R006 — Repo-sync event.** After a promotion that changes the operator home,
@@ -163,7 +164,7 @@ distributed transaction. The concrete semantics:
 - **V4 — Late subscriber catch-up (JetStream).** After N events, a new
   subscriber replays them in per-producer order via JetStream durable subjects.
 - **V5 — Validation gate.** A forged `host.status` (bad producer/unknown kind)
-  is dropped by the Hermes adapter, not stored.
+  is dropped by the the gateway adapter, not stored.
 - **V6 — Drift flag.** A live-vs-repo mismatch emits a `divergence` event
   (recorded, not corrected).
 
@@ -177,9 +178,9 @@ distributed transaction. The concrete semantics:
    stream/consumer config; hermetic tests (fakes, no network).
 3. **M3 — anvil-serving `[events]` seam.** Outbox-first best-effort publish
    after lifecycle commands; compatible with M2; docs + CLI audit; tests.
-4. **M4 — Private operator adapter.** Real NATS publisher (dev on Mini),
+4. **M4 — Private operator adapter.** Real NATS publisher (dev on node-b),
    commit-push-on-promote wrapper emitting correlation-linked
-   `config.adopted`+`repo.synced`, Hermes subscriber with validation gate +
+   `config.adopted`+`repo.synced`, the gateway subscriber with validation gate +
    rollback + observability. Deployed after M2/M3 prove out.
 5. **M5 — Rollout + observability.** `anvil events status` on each host,
    monitoring of `event.degraded`, retention/rotation policy enforced.

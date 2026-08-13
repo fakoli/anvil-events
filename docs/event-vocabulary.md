@@ -10,23 +10,23 @@ Versioned, append-only lifecycle events for the Anvil family. A single
 ```json
 {
   "version": 1,
-  "event_id": "fakoli-dark:serves:000123",
-  "producer": "fakoli-dark:serves",
+  "event_id": "node-a:serves:000123",
+  "producer": "node-a:serves",
   "producer_seq": 123,
   "observed_at": "2026-08-13T02:08:55.000Z",
   "emitted_at": "2026-08-13T02:08:55.120Z",
-  "correlation_id": "promote-r33-20260812-01",
+  "correlation_id": "promote-example-20260812-01",
   "schema": "https://anvil.dev/schemas/events/v1.json",
-  "host": "fakoli-dark",
+  "host": "node-a",
   "kind": "promote.applied",
-  "subject": "anvil.fleet.fakoli-dark.promote.applied",
+  "subject": "anvil.fleet.node-a.promote.applied",
   "payload": {
-    "tier": "primary-local",
-    "model": "deepseek-v4-flash-0731-r33-...-tp2-393k",
-    "context": 393216,
-    "rollback": "qwen35-122b-a10b-nvfp4",
+    "tier": "primary",
+    "model": "deepseek-primary-...-tp2-393k",
+    "context": 131072,
+    "rollback": "qwen35-rollback",
     "repo": "ops-private",
-    "repo_rev": "3d6861c",
+    "repo_rev": "0000000",
     "repo_synced": true
   }
 }
@@ -69,8 +69,9 @@ and host-wide subscriptions.
 - **Producer-local outbox** (authoritative): append-only JSONL
   `events/outbox/<YYYY-MM-DD>.jsonl`, fsync'd on write, per producer.
   This is the durable record that the change happened.
-- **JetStream mirror** (fleet): replicated subjects for late subscribers and
-  multi-host replay; retention 30d / N events (configurable).
+- **JetStream mirror** (fleet, PLANNED M2): replicated subjects for late
+  subscribers and multi-host replay; retention 7d / N events (configurable).
+  M1 ships the local outbox + archive only (at-least-once via Core NATS).
 - **Replay:** `anvil events replay [--since]` reads outbox-first, then
   JetStream. Per-producer order only; duplicates resolved by `event_id`.
 - **Rotation/retention:** outbox rotated on completion (published entries move

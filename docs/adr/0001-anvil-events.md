@@ -11,8 +11,8 @@
 
 The Anvil family spans anvil (coordination, leases, evidence-gated state) and
 anvil-serving (model serves + capability gateway). A recurring operator pain:
-**"what changed on Dark, and when?"** requires git archaeology; a promotion run
-directly on a host (e.g. the Codex-driven r33 393K change) never reaches the
+**"what changed on node-a, and when?"** requires git archaeology; a promotion run
+directly on a host (e.g. the operator CLI-driven r33-tp2 change) never reaches the
 repo or any other host until a human pushes. The repo is a passive journal; it
 only knows what's committed, and nothing auto-commits a promotion.
 
@@ -42,6 +42,8 @@ This revision absorbs those findings.
    remains the declared spec. A live-vs-repo mismatch is a *recorded*
    `divergence` event, never an automatic correction.
 3. **Durability: local-first outbox + JetStream mirror.**
+   *Status: outbox-first local durability is IMPLEMENTED (M1); the JetStream
+   mirror is PLANNED (M2) and not yet implemented.*
    - The producer's **local transactional outbox** (fsync'd append-only JSONL)
      is the authoritative record; write it BEFORE publishing.
    - An outbox write failure while enabled **fails the operation** (no silent
@@ -55,8 +57,8 @@ This revision absorbs those findings.
      acceptance tests.
    - "No event" is distinguishable from "delivery failed": outbox empty + no
      degraded = nothing happened; non-empty outbox = delivery pending/failed.
-4. **Transport: NATS JetStream.** nats-server 2.14.5, loopback where possible,
-   proven spike 2026-08-12 on Mini. K3s/etcd explicitly rejected (single-writer
+4. **Transport: NATS JetStream.** nats-server 2.14.x, loopback where possible,
+   proven spike 2026-08-12 on node-b. K3s/etcd explicitly rejected (single-writer
    per act). Subjects use `>` wildcards (multi-token), not `*`.
 5. **Ordering: per-producer, explicit.** `event_id`, `producer`,
    `producer_seq`, `observed_at`/`emitted_at`, `correlation_id`; consumers
@@ -67,7 +69,7 @@ This revision absorbs those findings.
 7. **Credentials are env-var names + threat model.** `[events]` carries
    `ANVIL_EVENTS_*` names (NATS URL, per-host producer token), never values.
    Threat model documented: tailnet-only TLS by default, producer identity via
-   per-host token, per-subject publish ACLs on JetStream, Hermes adapter
+   per-host token, per-subject publish ACLs on JetStream, the gateway adapter
    validates producer/kind/payload allowlist before any memory mutation
    (forged events dropped, not stored), journal mode/ownership enforced.
 8. **Best-effort ON TOP of the outbox, never a substitute.** Publishing never
@@ -78,8 +80,8 @@ This revision absorbs those findings.
 
 ## Consequences
 
-- **Positive.** "What's running on Dark?" becomes a journal query, not
-  archaeology. Hermes on Mini subscribes and refreshes memory on
+- **Positive.** "What's running on node-a?" becomes a journal query, not
+  archaeology. the gateway on node-b subscribes and refreshes memory on
   `anvil.fleet.>` (validated). The commit-push-on-promote hook is the first real
   adapter and closes today's drift.
 - **Negative.** A third repo is a maintenance commitment; the vocabulary must
@@ -89,5 +91,5 @@ This revision absorbs those findings.
 - **Risk.** Vocabulary drift / generic-ness ("yet another pub/sub" with no Anvil
   value). Mitigation: kinds tied to anvil-serving/anvil verbs; each new kind
   requires a schema bump + compatibility test. Security misconfiguration (weak
-  ACLs) would poison Hermes memory — mitigated by validation gate + drop, not
+  ACLs) would poison the gateway memory — mitigated by validation gate + drop, not
   store.

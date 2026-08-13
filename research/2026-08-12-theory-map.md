@@ -69,7 +69,7 @@ replays `[last_acked, current)`; a stale-term guard prevents duplicate delivery
 after reconnect; `event_id` is the dedup key at the consumer side.
 
 **Fit note.** LogPlayer targets backend storage shards; anvil-events targets
-JetStream subjects + Hermes/Mini. The protocol generalizes (the paper says
+JetStream subjects + the gateway/node-b. The protocol generalizes (the paper says
 "can be used with other asynchronous streaming platforms").
 
 ---
@@ -205,7 +205,7 @@ thread landed):
   library for all four papers.
 
 Remaining roadmap (M3+): the anvil-serving `[events]` seam, the private
-operator adapter (commit-push-on-promote + Hermes subscriber), and rollout —
+operator adapter (commit-push-on-promote + the gateway subscriber), and rollout —
 all tracked in `prd.md` Milestones.
 
 ## Sources

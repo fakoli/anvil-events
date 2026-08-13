@@ -5,7 +5,7 @@
 Every lifecycle change on any Anvil host — serve up/down, profile enter/leave,
 promotion applied, config adopted, repo synced — publishes a versioned JSON
 event and appends it to a durable journal. It answers the question that git
-archaeology can't: **"what changed on Dark, and when?"**
+archaeology can't: **"what changed on node-a, and when?"**
 
 - **anvil** coordinates *who* does what.
 - **anvil-serving** serves *what* models on which tiers.
@@ -21,8 +21,7 @@ causal-consistency checking, logical-clock semantics).
 independent gpt-5.6-sol reviews (Reject → Approve-with-changes → residuals
 fixed). Core CLI + transactional outbox + LogPlayer-style recovery +
 causal-consistency verify implemented (stdlib-only, `dependencies = []`,
-12 hermetic tests) and exercised end-to-end over NATS on Mini (nats-server
-2.14.5, loopback :4222). CI runs the hermetic suite on 3.11/3.12/3.13.
+12 hermetic tests) and exercised end-to-end over NATS on node-b (nats-server, loopback :4222). CI runs the hermetic suite on 3.11/3.12/3.13.
 
 PRD: [`prd.md`](prd.md) · Decision: [`docs/adr/0001-anvil-events.md`](docs/adr/0001-anvil-events.md) ·
 Vocabulary: [`docs/event-vocabulary.md`](docs/event-vocabulary.md) ·
@@ -49,18 +48,21 @@ That's a push-on-event problem, not a multi-writer consensus problem — NATS
 ```
 anvil events pub <subject> '<json>'      # publish (default nats://127.0.0.1:4222)
 anvil events sub <subject> [--count N]   # subscribe (bounded)
-anvil events replay [--since ISO]        # replay the journal
+anvil events emit <kind> --host H ...      # outbox-first + publish
+anvil events replay [--lines N]           # replay the journal
+anvil events verify --root <dir>          # causal-consistency check
 ```
 
-Transport for the spike uses the `nats` CLI + `nats-server` (brew); the
-package ships stdlib-only and shells out to them if configured.
+Transport: a minimal stdlib NATS core client (`anvil_events/nats_mini.py`)
+speaks the wire protocol directly; a `nats-server` (or any NATS broker) is
+required at runtime. The package ships stdlib-only (`dependencies = []`).
 
 ## Roadmap
 
 - M1 — vocabulary + `anvil events pub/sub/replay` (stdlib)
 - M2 — anvil-serving `[events]` seam (best-effort publish after lifecycle)
-- M3 — operator adapter: real publisher + commit-push-on-promote + Hermes
-  subscriber on Mini
+- M3 — operator adapter: real publisher + commit-push-on-promote + the gateway
+  subscriber on node-b
 - M4 — graduate to own repo with PRD, ADR, vocabulary, tests, CI
 
 See [`prd.md`](prd.md) for the full plan, acceptance criteria, and open

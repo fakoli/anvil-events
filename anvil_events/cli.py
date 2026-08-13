@@ -15,7 +15,6 @@ import json
 import os
 import sys
 
-from . import __version__
 from .nats_mini import NATSClient
 from .outbox import CausalChecker, KINDS, Outbox, make_event
 
@@ -28,7 +27,6 @@ def _outbox(root):
 
 
 def _pub(root, subject, payload):
-    out = _outbox(root)
     client = NATSClient(DEFAULT_URL).connect(timeout=3)
     try:
         client.publish(subject, payload)
@@ -46,8 +44,11 @@ def cmd_init(args):
 def cmd_emit(args):
     """Outbox-FIRST: write to the durable outbox, then attempt publish."""
     o = _outbox(args.root)
+    # sequence = max(pending seq, acked cursor seq) + 1  -> never reuse
+    pending_seqs = [e.get("producer_seq", 0) for e in o.read_pending()]
     curs = o.load_cursors()
-    seq = 1 + max([c.get("producer_seq", 0) for c in curs.values()] or [0])
+    acked_max = max([c.get("producer_seq", 0) for c in curs.values()] or [0])
+    seq = max([1] + pending_seqs + [acked_max]) + 1
     try:
         payload = json.loads(args.payload)
         event = make_event(args.producer, args.kind, args.host, payload,
@@ -56,15 +57,20 @@ def cmd_emit(args):
         sys.exit("emit error: %s" % e)
     path = o.append(event)          # 1) durable record (fsync'd)
     delivered = False
+    client = None
     try:
-        NATSClient(DEFAULT_URL).connect(timeout=3).publish(
-            event["subject"], event)
+        client = NATSClient(DEFAULT_URL).connect(timeout=3)
+        client.publish(event["subject"], event)
+        # Core NATS write succeeded; this is AT-LEAST-ONCE, not durable.
+        # A JetStream ack (M2) is the durable confirmation; until then we
+        # honestly report the publish reached the server socket.
         delivered = True
-        o.ack(event)                # 2) best-effort publish on top
-        o.ack  # noqa
-    except Exception as e:          # 3) undelivered stays pending (visible)
+    except Exception as e:
         print("WARN: publish failed (%s) -> event stays pending in %s"
               % (e, path))
+    finally:
+        if client is not None:
+            client.close()
     print("emitted %s -> %s seq=%d delivered=%s"
           % (event["event_id"], event["subject"], seq, delivered))
 
@@ -127,10 +133,10 @@ def cmd_verify(args):
             for fn in sorted(os.listdir(d)):
                 if fn.endswith(".jsonl"):
                     with open(os.path.join(d, fn), encoding="utf-8") as f:
-                        events += [json.loads(l) for l in f if l.strip()]
+                        events += [json.loads(line_) for line_ in f if line_.strip()]
     else:
         with open(args.path, encoding="utf-8") as f:
-            events = [json.loads(l) for l in f if l.strip()]
+            events = [json.loads(line_) for line_ in f if line_.strip()]
     events.sort(key=lambda e: (e.get("observed_at", ""), e.get("producer_seq", 0)))
     ok, err = CausalChecker.check(events)
     print("causal consistency: %s (%d events)" % ("OK" if ok else "VIOLATED", len(events)))
@@ -155,7 +161,7 @@ def main(argv=None):
     e = sub.add_parser("emit")
     e.add_argument("kind", choices=sorted(KINDS))
     e.add_argument("--host", required=True)
-    e.add_argument("--producer", default=os.environ.get("ANVIL_EVENTS_PRODUCER", "fakoli-mini:local"))
+    e.add_argument("--producer", default=os.environ.get("ANVIL_EVENTS_PRODUCER", "local:cli"))
     e.add_argument("--correlation")
     e.add_argument("payload")
     pub = sub.add_parser("pub")

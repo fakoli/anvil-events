@@ -73,21 +73,35 @@ class Outbox:
             return path
 
     def read_pending(self):
-        """Yield all pending events (all outbox files), oldest first."""
+        """Yield all pending events (all outbox files), oldest first.
+
+        A torn final line (no trailing newline — the signature of a crash
+        mid-append) is dropped, not yielded: the event was never durably
+        completed.
+        """
         for fn in sorted(os.listdir(self.outbox_dir)):
             if not fn.endswith(".jsonl"):
                 continue
             with open(os.path.join(self.outbox_dir, fn), encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        yield json.loads(line)
+                data = f.read()
+            lines = data.splitlines()
+            # if the file doesn't end with a newline, the last line is torn
+            if data and not data.endswith("\n") and lines:
+                lines = lines[:-1]
+            for line_ in lines:
+                line_ = line_.strip()
+                if line_:
+                    yield json.loads(line_)
 
     def count_pending(self):
         return sum(1 for _ in self.read_pending())
 
     def ack(self, event):
-        """Move a delivered event to the archive + advance the target cursor."""
+        """Move a delivered event to the archive + advance the target cursor.
+
+        Atomically rewrites the pending file (write-then-`os.replace`) and
+        fsyncs the archive, so a crash cannot tear the move.
+        """
         with self._lock:
             day = event.get("observed_at", utcnow_iso())[:10]
             src = os.path.join(self.outbox_dir, day + ".jsonl")
@@ -95,11 +109,17 @@ class Outbox:
             key = json.dumps(event, sort_keys=True)
             if os.path.exists(src):
                 with open(src, encoding="utf-8") as f:
-                    lines = [l for l in f if l.strip() != key]
-                with open(src, "w", encoding="utf-8") as f:
+                    lines = [line_ for line_ in f if line_.strip() != key]
+                tmp = src + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
                     f.writelines(lines)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, src)
             with open(dst, "a", encoding="utf-8") as f:
                 f.write(key + "\n")
+                f.flush()
+                os.fsync(f.fileno())
             self._set_cursor(event)
 
     def _set_cursor(self, event):
@@ -205,15 +225,30 @@ class TargetQueue:
 class CausalChecker:
     """Cycle-check journal replay for causal consistency (arXiv:2011.09753).
 
-    Builds the happens-before graph: per-producer producer_seq chains and
-    per-correlation_id observed_at chains. A cycle => not causally consistent
-    (e.g. forged/mis-ordered events).
+    Builds the happens-before graph from EXPLICIT edges only: per-producer
+    `producer_seq` chains (program order) and same-`correlation_id` chains by
+    `observed_at` (causal order — an explicit link, not an invented one).
+    Duplicate `event_id`s are deduplicated first. Uses iterative DFS so large
+    journals cannot overflow the stack.
     """
 
     @staticmethod
     def check(events):
+        # Dedup by event_id (keep first occurrence — replay of a journal
+        # may legally repeat a record, e.g. from an archive + outbox scan).
+        seen = set()
+        uniq = []
+        for e in events:
+            eid = e.get("event_id")
+            if eid in seen:
+                continue
+            seen.add(eid)
+            uniq.append(e)
+        events = uniq
         n = len(events)
-        adj = [[] for _ in range(n)]
+        # topological sort via Kahn's algorithm (no recursion)
+        adj = [set() for _ in range(n)]
+        indeg = [0] * n
         by_producer = {}
         by_corr = {}
         for i, e in enumerate(events):
@@ -223,35 +258,34 @@ class CausalChecker:
             if corr:
                 by_corr.setdefault(corr, []).append(
                     (e.get("observed_at", ""), i))
-        for lst in by_producer.values():          # program order: seq asc
+        for lst in by_producer.values():
             lst.sort()
             for (_, i), (_, j) in zip(lst, lst[1:]):
-                adj[i].append(j)
-        for lst in by_corr.values():              # correlation order: observed asc
+                if j not in adj[i]:
+                    adj[i].add(j)
+                    indeg[j] += 1
+        for lst in by_corr.values():
             lst.sort(key=lambda t: t[0])
             for (_, i), (_, j) in zip(lst, lst[1:]):
-                if i != j:
-                    adj[i].append(j)
-        # DFS cycle detection
-        WHITE, GREY, BLACK = 0, 1, 2
-        color = [WHITE] * n
-
-        def dfs(u):
-            color[u] = GREY
+                if i == j or j in adj[i]:
+                    continue
+                adj[i].add(j)
+                indeg[j] += 1
+        # Kahn: if we can't drain all nodes, there's a cycle
+        import collections
+        q = collections.deque([i for i in range(n) if indeg[i] == 0])
+        order = []
+        while q:
+            u = q.popleft()
+            order.append(u)
             for v in adj[u]:
-                if color[v] == GREY:
-                    return v
-                if color[v] == WHITE:
-                    cyc = dfs(v)
-                    if cyc is not None:
-                        return cyc
-            color[u] = BLACK
-            return None
-
-        for u in range(n):
-            if color[u] == WHITE:
-                cyc = dfs(u)
-                if cyc is not None:
-                    return False, ("cycle at event %d: %s"
-                                   % (cyc, events[cyc].get("event_id")))
+                indeg[v] -= 1
+                if indeg[v] == 0:
+                    q.append(v)
+        if len(order) != n:
+            # find a node still on a cycle for the message
+            remaining = [i for i in range(n) if i not in set(order)]
+            cyc = remaining[0] if remaining else 0
+            return False, ("cycle involving event %d: %s"
+                           % (cyc, events[cyc].get("event_id")))
         return True, None

@@ -6,18 +6,31 @@ JetStream (durable subjects) is the M2 upgrade path; the local outbox is the
 durability mechanism for this spike (per PRD reliability contract).
 """
 import json
+import re
 import socket
 
 PROTO = {"verbose": False, "pedantic": False, "tls_required": False,
          "name": "anvil-events"}
+_MAX_BODY = 8 * 1024 * 1024          # 8 MiB publish cap
+_VALID_SUBJECT = re.compile(r"^[A-Za-z0-9._>\-]+$")
 
 
 def parse_url(url):
-    host = url.replace("nats://", "").split(":")[0] or "127.0.0.1"
-    port = 4222
-    if ":" in url.replace("nats://", ""):
-        port = int(url.replace("nats://", "").split(":")[1])
-    return host, port
+    """Parse nats://[host][:port] (127.0.0.1:4222 default)."""
+    rest = (url or "").replace("nats://", "")
+    if not rest:
+        return "127.0.0.1", 4222
+    if ":" in rest:
+        host, port = rest.rsplit(":", 1)
+        return (host or "127.0.0.1"), int(port)
+    return rest, 4222
+
+
+def validate_subject(subject):
+    """Reject subjects that could inject CRLF/space into the protocol."""
+    if not subject or not _VALID_SUBJECT.match(subject):
+        raise ValueError("invalid subject %r" % subject)
+    return subject
 
 
 class NATSClient:
@@ -44,16 +57,22 @@ class NATSClient:
 
     def _readline(self):
         while b"\r\n" not in self._buf:
-            chunk = self.sock.recv(4096)
+            chunk = self.sock.recv(65536)
             if not chunk:
                 raise IOError("connection closed")
             self._buf += chunk
+            if len(self._buf) > 2 * _MAX_BODY:
+                raise IOError("protocol buffer overflow")
         line, self._buf = self._buf.split(b"\r\n", 1)
+        if line.startswith(b"-ERR"):
+            raise IOError(line.decode(errors="replace"))
         return line
 
     def _read_n(self, n):
+        if n > _MAX_BODY:
+            raise IOError("frame too large: %d" % n)
         while len(self._buf) < n + 2:
-            chunk = self.sock.recv(4096)
+            chunk = self.sock.recv(65536)
             if not chunk:
                 raise IOError("connection closed")
             self._buf += chunk
@@ -61,13 +80,17 @@ class NATSClient:
         return body
 
     def publish(self, subject, payload):
+        validate_subject(subject)
         if isinstance(payload, (dict, list)):
             payload = json.dumps(payload).encode()
+        if len(payload) > _MAX_BODY:
+            raise ValueError("payload too large")
         self._send(b"PUB " + subject.encode() + b" " +
                    str(len(payload)).encode() + b"\r\n" + payload + b"\r\n")
 
     def subscribe(self, subject, count=1, timeout=10):
         """Block until `count` messages (or timeout); yield payloads."""
+        validate_subject(subject)
         got = []
         self._send(b"SUB " + subject.encode() + b" 1\r\n")
         import time
@@ -81,7 +104,6 @@ class NATSClient:
                     continue
                 if line.startswith(b"MSG"):
                     parts = line.split(b" ")
-                    # MSG <subject> <sid> [reply] <nbytes>
                     nbytes = int(parts[-1])
                     body = self._read_n(nbytes)
                     got.append(body)
