@@ -27,9 +27,17 @@ Work through the milestones **in order**. For EACH milestone:
 
 Repeat until all milestones are complete.
 
-## 2. Escalation: getting stuck
+## 2. Review boundary (operator-set, 2026-08-12)
 
-- If a design decision is unclear, the tests won't pass, or the review
+**One review per milestone; only CODE correctness can REQUEST CHANGES.**
+Small doc drift is NON-BLOCKING (the design docs evolve across milestones and
+are reconciled at the end). The reviewer must judge the *diff of the
+milestone*, not re-scan the whole repo for doc inconsistencies. A review may
+only REQUEST CHANGES for a real code defect (correctness/security/durability/
+race), not for prose. If the only findings are doc wording, the milestone
+passes and doc drift is tracked as a follow-up, not a blocker.
+
+## 3. Escalation: getting stuck
   produces a finding you don't understand: **ask GPT 5.6 (gpt-5.6-sol,
   --provider openai-codex) for advice** — not just as a reviewer, but as a
   consultant. Frame the question with the exact code/error/finding.
