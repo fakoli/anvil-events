@@ -3,18 +3,20 @@
 > Updated at every milestone boundary. The single source of truth for "what
 > is done / what is next" across context compactions. See AGENTS.md §3.
 
-- **Current milestone:** M5 — rollout + observability (event.degraded monitoring, retention enforcement)
-- **Current commit:** 10ec6a3 (anvil-events main; M4 APPROVED). Private wrapper: ops-private @ 03a8ccc.
-- **In progress:** M4 ✅ complete (final gate APPROVE deleg_0100c2a2, 2026-08-13).
-  M5 starting: `anvil events status` on each host, event.degraded monitoring,
-  retention/rotation enforced, nats-server as a persistent service.
-- **Open review:** none (M4 closed APPROVE)
-- **Next action:** M5 rollout + observability (status on hosts, degraded
-  monitoring, retention enforcement, broker persistence).
-- **Tests/quality:** 48 pass (37 baseline + 11 M4) · ruff clean · CI green.
-- **Notes:** host daemon healthy; anvil-events uv-tool has M4 verbs; Hermes
-  ingestion cron `5fb3e7110183` live (validated, dedup, fact-store hook);
-  nats-server still NOT a persistent service (gap → M5).
+- **Current milestone:** M5 — rollout + observability (implementation done, gate pending)
+- **Current commit:** 5a7f9ae (anvil-events main; M5 code merged). Broker: dedicated
+  LaunchAgent `com.fakoli.nats-server` (config, JetStream, KeepAlive).
+- **In progress:** M5 implementation DONE + deployed. Hard-cap retention
+  enforcement (`gc` evicts oldest rotated overflow), health surfaces
+  `pending`+`degraded_events` (degraded signal), broker is now a persistent
+  service (JetStream with persisted storage). 50 tests, CI green.
+- **Open review:** M5 boundary review (pending dispatch)
+- **Next action:** M5 boundary adversarial review → fix findings → mark M5 ✅.
+- **Tests/quality:** 50 pass (48 + hard-cap eviction + health observability) ·
+  ruff clean · CI green (5a7f9ae).
+- **Notes:** host daemon healthy incl. degraded observability
+  (`pending:6` = unpublished events visible); uv tool reinstalled (cache
+  busted) with M5 code; Hermes ingestion cron `5fb3e7110183` live.
 
 ---
 
@@ -30,3 +32,6 @@
   wrapper + runbook @ 03a8ccc; Hermes validated-ingestion cron live;
   fixes for 4 review blockers (false-boolean, git failure semantics,
   status-failure, public-safety) in 10ec6a3; gate APPROVE (deleg_0100c2a2).
+- **M5** 🔄 2026-08-13: retention enforcement (gc hard-cap eviction) +
+  health observability (pending/degraded_events) + broker persistence
+  (LaunchAgent + JetStream) merged 5a7f9ae; deployed; gate pending.
