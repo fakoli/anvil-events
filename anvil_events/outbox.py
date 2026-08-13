@@ -257,11 +257,13 @@ class TargetQueue:
 class CausalChecker:
     """Cycle-check journal replay for causal consistency (arXiv:2011.09753).
 
-    Builds the happens-before graph from EXPLICIT edges only: per-producer
-    `producer_seq` chains (program order) and same-`correlation_id` chains by
-    `observed_at` (causal order — an explicit link, not an invented one).
-    Duplicate `event_id`s are deduplicated first. Uses iterative DFS so large
-    journals cannot overflow the stack.
+    Builds the happens-before graph from EXPLICIT edges only:
+      - per-producer `producer_seq` chains (program order),
+      - `causes` lists (explicit causal edges: `causes` names upstream
+        event_ids, so the edge runs cause -> effect).
+    Duplicate `event_id`s are deduplicated first. Uses an iterative
+    topological sort (Kahn) so large journals cannot overflow the stack.
+    Ordering is never inferred from timestamps.
     """
 
     @staticmethod
@@ -287,12 +289,13 @@ class CausalChecker:
         for i, e in enumerate(events):
             by_producer.setdefault(e.get("producer"), []).append(
                 (e.get("producer_seq", 0), i))
-            # explicit causal edges ONLY: `causes` = list of upstream event_ids
+            # explicit causal edges ONLY: `causes` = upstream event_ids.
+            # cause -> effect: edge j -> i (j happened before i).
             for cev in (e.get("causes") or []):
                 j = by_id.get(cev)
-                if j is not None and j not in adj[i]:
-                    adj[i].add(j)
-                    indeg[j] += 1
+                if j is not None and i not in adj[j]:
+                    adj[j].add(i)
+                    indeg[i] += 1
         for lst in by_producer.values():
             lst.sort()
             for (_, i), (_, j) in zip(lst, lst[1:]):

@@ -25,7 +25,7 @@ at a time (whoever runs it), so there is no multi-writer leader election to
 solve. K3s/etcd/ZooKeeper would add cluster weight (on WSL2 + macOS) for a
 pub/sub problem.
 
-An independent second-model review (gpt-5.6-sol, 2026-08-12) rejected the
+An independent second-model review (2026-08-12) rejected the
 first draft: the "best-effort silent no-op" publisher contradicted the
 "durable journal" promise; NATS semantics (durability, wildcards) were
 unspecified; ordering was undefined under multi-host producers; vocabulary

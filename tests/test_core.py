@@ -120,20 +120,26 @@ class TestCausalChecker(unittest.TestCase):
         ok, err = CausalChecker.check(events)
         self.assertTrue(ok, err)
 
-    def test_explicit_causes_cycle_detected(self):
+    def test_explicit_causes_chain_is_valid(self):
+        """A proper cause->effect chain must NOT be flagged as a cycle."""
         events = [
-            self._ev("p1", 1, "c1", "2026-08-12T10:00:00.000Z"),
-            self._ev("p1", 2, "c1", "2026-08-12T10:00:01.000Z",
+            self._ev("p1", 1, None, "2026-08-12T10:00:00.000Z"),
+            self._ev("p1", 2, None, "2026-08-12T10:00:01.000Z",
                      causes=["p1:000001"]),
-            self._ev("p1", 3, "c1", "2026-08-12T10:00:02.000Z",
+            self._ev("p1", 3, None, "2026-08-12T10:00:02.000Z",
                      causes=["p1:000002"]),
-            # cycle: 4 claims 3 caused it, 3 claims 4 caused it
-            self._ev("p1", 4, "c1", "2026-08-12T10:00:03.000Z",
-                     causes=["p1:000003"]),
         ]
-        # add a back-edge: event 3 causes event 4 AND 4 causes 3
-        events[2]["causes"] = ["p1:000002", "p1:000004"]  # 3 caused by 2 AND 4
-        events[3]["causes"] = ["p1:000003"]               # 4 caused by 3
+        ok, err = CausalChecker.check(events)
+        self.assertTrue(ok, "valid causal chain must pass: %s" % err)
+
+    def test_explicit_causes_cycle_detected(self):
+        """Mutual causality (a causes b, b causes a) is a real cycle."""
+        events = [
+            self._ev("p2", 1, None, "2026-08-12T10:00:00.000Z",
+                     causes=["p2:000002"]),
+            self._ev("p2", 2, None, "2026-08-12T10:00:01.000Z",
+                     causes=["p2:000001"]),
+        ]
         ok, err = CausalChecker.check(events)
         self.assertFalse(ok)
         self.assertIn("cycle", err)

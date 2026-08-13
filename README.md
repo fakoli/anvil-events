@@ -24,7 +24,7 @@ causal-consistency checking, logical-clock semantics).
 ## Status
 
 **M1 baseline (2026-08-13, public).** PRD and ADR revised through two
-independent gpt-5.6-sol reviews (Reject → Approve-with-changes → residuals
+independent second-model reviews (Reject → Approve-with-changes → residuals
 fixed). Core CLI + transactional outbox + LogPlayer-style recovery +
 causal-consistency verify implemented (stdlib-only, `dependencies = []`,
 12 hermetic tests) and exercised end-to-end over NATS on node-b (nats-server, loopback :4222). CI runs the hermetic suite on 3.11/3.12/3.13.

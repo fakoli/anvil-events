@@ -22,10 +22,10 @@ Versioned, append-only lifecycle events for the Anvil family. A single
   "subject": "anvil.fleet.node-a.promote.applied",
   "payload": {
     "tier": "primary",
-    "model": "deepseek-primary-...-tp2-393k",
+    "model": "example-llm-pr-...-tp2-393k",
     "context": 131072,
-    "rollback": "qwen35-rollback",
-    "repo": "ops-private",
+    "rollback": "example-rollback",
+    "repo": "operator-repo",
     "repo_rev": "0000000",
     "repo_synced": true
   }
@@ -43,7 +43,7 @@ Versioned, append-only lifecycle events for the Anvil family. A single
 | `promote.applied` | `.promote.applied` | tier, model, context, rollback, revision | `serves promote` |
 | `promote.rolled_back` | `.promote.rolled_back` | tier, restored model | `serves promote --rollback` |
 | `config.adopted` | `.config.adopted` | file(s), repo, rev; `correlation_id` links to promote | commit-push-on-promote wrapper |
-| `repo.synced` | `.repo.synced` | repo, pushed rev, ok/failed; `correlation_id` links | the ops-private commit-push hook |
+| `repo.synced` | `.repo.synced` | repo, pushed rev, ok/failed; `correlation_id` links | the operator commit-push hook |
 | `host.status` | `.host.status` | host, reachable, gpu used/free | periodic host probe / `host status` |
 | `divergence` | `.divergence` | declared vs live mismatch, delta | reconciliation probe |
 | `event.degraded` | `.event.degraded` | cause (outbox full, publish failed), pending entries | event subsystem itself |
