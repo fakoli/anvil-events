@@ -1,0 +1,1458 @@
+                                                            Checking Causal Consistency
+                                                             of Distributed Databases⋆
+
+                                                     Rachid Zennou12 , Ranadeep Biswas1 , Ahmed Bouajjani1 ,
+                                                           Constantin Enea1 , and Mohammed Erradi2
+                                                       1
+                                                            Université de Paris, IRIF, CNRS, F-75013 Paris, France
+
+
+
+
+arXiv:2011.09753v5 [cs.DB] 16 Feb 2021
+                                                                       {ranadeep,abou,cenea}@irif.fr
+                                                           2
+                                                             ENSIAS, Mohammed V University, Rabat, Morocco,
+                                                               {rachid.zennou,mohamed.erradi}@gmail.com
+
+
+
+                                                 Abstract. The CAP Theorem shows that (strong) Consistency, Avail-
+                                                 ability, and Partition tolerance are impossible to be ensured together.
+                                                 Causal consistency is one of the weak consistency models that can be
+                                                 implemented to ensure availability and partition tolerance in distributed
+                                                 systems. In this work, we propose a tool to check automatically the con-
+                                                 formance of distributed/concurrent systems executions to causal consis-
+                                                 tency models. Our approach consists in reducing the problem of checking
+                                                 if an execution is causally consistent to solving Datalog queries. The re-
+                                                 duction is based on complete characterizations of the executions violating
+                                                 causal consistency in terms of the existence of cycles in suitably defined
+                                                 relations between the operations occurring in these executions. We have
+                                                 implemented the reduction in a testing tool for distributed databases,
+                                                 and carried out several experiments on real case studies, showing the
+                                                 efficiency of the suggested approach.
+
+                                                 Keywords: Causal Consistency · Causal Memory · Causal Convergence
+                                                 · Distributed Databases · Formal verification · Testing
+
+
+                                         1     Introduction
+                                         Causal consistency [21] is one of the most implemented models for distributed
+                                         systems. Contrary to strong consistency [18] (Linearizability [19] and Sequen-
+                                         tial Consistency [20]), causal consistency can be implemented in the presence of
+                                         faults while ensuring availability. Several implementations of different variants
+                                         of causal consistency (such as causal convergence[23] and causal memory [7, 24])
+                                         have been developed i.e.,[8, 12, 13, 22, 25, 26]. However, the development of such
+                                         implementations that meet both consistency requirements and availability and
+                                         performance requirements is an extremely hard and error prone task. Hence,
+                                         ⋆
+                                             This is an extended version of a paper published in NETYS’2019 proceeding [32].
+                                             This work is supported in part by the European Research Council (ERC) under the
+                                             European Union’s Horizon 2020 research and innovation programme (grant agree-
+                                             ment No 678177). This work is also supported by Centre National pour la Recherche
+                                             Scientifique et Technique (CNRST) Morocco.
+2       Rachid Zennou et al.
+
+developing efficient approaches to check the correctness of executions w.r.t con-
+sistency models such as causal consistency is crucial. This paper presents an
+approach and a tool for checking automatically the conformance of the compu-
+tations of a system to causal consistency. More precisely, we address the problem
+of, given a computation, checking its conformance to causal consistency. We con-
+sider this problem for three variants of causal consistency that are used in prac-
+tice. Solving this problem constitutes the cornerstone for developing dynamic
+verification and testing algorithms for causal consistency.
+Bouajjani et al. [9] studied the complexity of checking causal consistency for a
+given computation and showed that it is polynomial time. In addition, they for-
+malized the different variations of causal consistency and proposed a reduction
+of this problem to the occurrence of a finite number of small ”bad-patterns” in
+the computations (i.e., some small sets of events occurring in the computations
+in some particular order). In this paper, we build on that work in order to define
+a practical approach and a tool for checking causal consistency, and to apply
+this tool to real-life case studies. Our approach consists basically in reducing the
+problem of detecting the existence of bad patterns defined in [9] in computa-
+tions to the problem of solving a Datalog queries. The fact that solving Datalog
+queries is polynomial time and that our reduction is polynomial in the size of
+the computation, allows to solve the conformance checking for causal consistency
+in polynomial time (𝑂(𝑛3 )). We have implemented our approach in an efficient
+testing tool for distributed systems, and carried out several experiments on real
+distributed databases, showing the efficiency and performance of this approach.
+    The rest of this paper is as follows, Section 2 presents preliminaries that
+include the used notations and the system model. Section 3 is dedicated to
+defining the causal consistency models. Section 3.2 recalls the characterization
+of causal consistency violations introduced in [9]. Section 5 presents our reduction
+of the problem of conformance checking for causal consistency to the problem of
+solving Datalog queries. Section 6 describes our testing tool, the case studies we
+have considered, and the experimental results we obtained. Section 7 presents
+related work, and finally conclusions are drown in Section 8.
+
+
+2    Preliminaries
+
+Notations. Given a set 𝑂 and a relation ℛ ⊆ 𝑂 × 𝑂, we use the notation
+(𝑜1 ,𝑜2 ) ∈ ℛ to denote the fact that 𝑜1 and 𝑜2 are related by ℛ. If ℛ is an order,
+it denotes the fact that 𝑜1 precedes 𝑜2 in this order. The transitive closure of ℛ
+is denoted by ℛ+ , which is the composition of one or multiple copies of ℛ
+     Let 𝑂′ be a subset of 𝑂. Then ℛ|𝑂′ is the relation ℛ projected on the set 𝑂′ ,
+that is {(𝑜1 , 𝑜2 ) ∈ ℛ | 𝑜1 , 𝑜2 ∈ 𝑂′ }. The set 𝑂′ ⊆ 𝑂 is said to be downward-closed
+w.r.t a relation ℛ if ∀𝑜1 , 𝑜2 , if 𝑜2 ∈ 𝑂′ and (𝑜1 , 𝑜2 ) ∈ ℛ then 𝑜1 ∈ 𝑂′ as well.
+A relation ℛ ⊆ 𝑂 × 𝑂 is a strict partial order if it is transitive and irreflexive.
+Given a strict partial order ℛ over 𝑂, a poset is a pair (𝑂, ℛ). Notice here
+that we consider the strict version of posets (not the ones where the underlying
+partial order is weak, i.e. reflexive, transitive and antisymmetric. Given a set 𝛴,
+                       Checking Causal Consistency of Distributed Databases           3
+
+a poset (𝑂, ℛ), and a labeling function ℓ : 𝑂 → 𝛴, the 𝛴 labeled poset 𝜌 is a
+tuple (𝑂, ℛ, ℓ).
+     We say that 𝜌′ is a prefix of 𝜌 if there exists a downward closed set 𝐴 ⊆ 𝑂
+w.r.t. relation ℛ such that 𝜌′ = (𝐴, ℛ, ℓ). If the relation ℛ is a strict total order,
+we say that a (resp., labeled) sequential poset (sequence for short) is a (resp.,
+labeled) poset. The concatenation of two sequential posets 𝑒 and 𝑒′ is denote by
+𝑒.𝑒′ .
+     Consider a set of methods M from a domain D. For 𝑚 ∈ M and arg, rv ∈ D,
+and 𝑜 ∈ 𝑂, ℓ(𝑜) = (𝑚, arg, rv ) means that operation 𝑜 is an invocation of 𝑚 with
+input arg which returns rv . The label ℓ(𝑜) is sometimes denoted 𝑚(arg, rv ). Let
+𝜌 = (𝑂, ℛ, ℓ) be a M × D × D labeled poset and 𝑂′ ⊆ 𝑂. We denote by 𝜌{𝑂′ }
+the labeled poset where we only keep the return values of the operations in 𝑂′ .
+Formally, 𝜌{𝑂′ } is the (M × D) ∪ (M × D × D) labeled poset (𝑂, ℛ, ℓ′ ) where
+for all 𝑜 ∈ 𝑂′ , ℓ′ (𝑜) = ℓ(𝑜), and for all 𝑜 ∈ 𝑂 ∖ 𝑂′ , if ℓ(𝑜) = (𝑚, arg, rv ), then
+ℓ′ (𝑜) = (𝑚, arg). Now, we introduce a relation on labeled posets, denoted ⪯. Let
+𝜌 = (𝑂, ℛ, ℓ) and 𝜌′ = (𝑂, ℛ′ , ℓ′ ) be two posets labeled by (M × D) ∪ (M × D × D)
+(the return values of some operations in 𝑂 might not be specified). The notation
+𝜌′ ⪯ 𝜌 means that 𝜌′ has less order and label constraints on the set 𝑂. Formally,
+𝜌′ ⪯ 𝜌 if ℛ′ ⊆ ℛ and for all operation 𝑜 ∈ 𝑂, and for all 𝑚 ∈ M, arg, rv ∈ D,
+ℓ(𝑜) = ℓ′ (𝑜), or ℓ(𝑜) = (𝑚, arg, rv ) implies ℓ′ (𝑜) = (𝑚, arg).
+     System model. We consider a distributed system model in which a system
+is composed of several processes (sites) connected over a network. Each process
+performs operations on objects (variables) Var = {𝑥, 𝑦, . . .}. These objects are
+called replicated objects and their state is replicated at all processes. Clients in-
+teract with the system by performing operations. Assuming an unspecified set of
+values Val and a set of operation identifiers IdO. We define the set of operations
+as Op = {read𝑖 (𝑥, 𝑣), write𝑖 (𝑥, 𝑣) : 𝑖 ∈ IdO, 𝑥 ∈ Var, 𝑣 ∈ Val}. Where read𝑖 (𝑥, 𝑣) is
+a read operation reading a value 𝑣 from a variable 𝑥 and write𝑖 (𝑥, 𝑣) is a write
+operation writing a value 𝑣 on a variable 𝑥. The set of read, resp., write, opera-
+tions in a set of operations 𝑂 is R(𝑂), resp., W(𝑂). The variable accessed by an
+operation 𝑜 is denoted by var(𝑜).
+Histories. We consider an abstract notion of an execution called history which
+includes write and read operations. The operations performed by the same pro-
+cess are ordered by a program order po. We assume that histories include a
+write-read relation that matches each read operation to the write operation writ-
+ten its return value.
+Formally, a history ⟨𝑂, po, wr⟩ is a set of read or write operations 𝑂 along with
+a partial program order po and a write-read relation wr ⊆ W(𝑂) × R(𝑂), such
+that if (write(𝑥, 𝑣), read(𝑥′ , 𝑣 ′ )) ∈ wr, then 𝑥 = 𝑥′ and 𝑣 = 𝑣 ′ . For 𝑜1 , 𝑜2 ∈ 𝑂,
+(𝑜1 , 𝑜2 ) ∈ po means that 𝑜1 , 𝑜2 were issued by the same process and 𝑜1 was sub-
+mitted before 𝑜2 . We mention that the write-read relation can only be defined
+for differentiated histories.
+Differentiated histories. A history ⟨𝑂, po, wr⟩ is differentiated if each value
+is written at most once, i.e., for all write operations write(𝑥, 𝑣) and write(𝑥, 𝑣 ′ ),
+𝑣 ̸= 𝑣 ′ .
+4       Rachid Zennou et al.
+
+Data Independence. An implementation is data-independent if its behavior
+does not depend on the handled values. We consider in this paper implementa-
+tions that are data-independent which is a natural assumption that corresponds
+to a wide range of existing implementations. Under this assumption, it is good
+enough to consider differentiated histories [9]. Thus, all histories in this paper
+are differentiated.
+    In addition, we assume that each history contains a write operation writing
+the initial value (the value 0) of variable 𝑥, for each variable 𝑥. These write
+operations precede all other operations in po.
+Specification. The consistency of a replicated object is defined w.r.t. some
+specification, determining the correct behaviors of that object in a sequential
+setting. In this work, we consider the read/write memory for which the specifi-
+cation 𝑆𝑅𝑊 is inductively defined as the smallest set of sequences closed under
+the following rules (x ∈ Var and v ∈ Val):
+
+ 1. 𝜀 ∈ 𝑆𝑅𝑊 ,
+ 2. if 𝜌 ∈ 𝑆𝑅𝑊 , then 𝜌.write(𝑥, 𝑣) ∈ 𝑆𝑅𝑊 ,
+ 3. if 𝜌 ∈ 𝑆𝑅𝑊 contains no write on 𝑥, then 𝜌.read(𝑥, 0) ∈ 𝑆𝑅𝑊 ,
+ 4. if 𝜌 ∈ 𝑆𝑅𝑊 and the last write in 𝜌 on variable 𝑥 is write(𝑥, 𝑣), then 𝜌.read(𝑥, 𝑣) ∈
+    𝑆𝑅𝑊 .
+
+
+3     Causal Consistency
+
+3.1   Causal Consistency definitions
+
+Causal consistency [21] is one of the most used models for replicated objects. It
+guarantees that, if two operations 𝑜1 and 𝑜2 are causally related (some process
+is aware of 𝑜1 when executing 𝑜2 ), then 𝑜1 should be executed before 𝑜2 in all
+processes. Operations that are not causally related may be seen in different orders
+by different processes. We present in the following three variations of causal
+consistency, weak causal consistency, causal convergence and causal memory.
+We use the same definitions as in [9].
+
+
+Weak causal consistency The weakest variation of causal consistency is called
+weak causal consistency (CC, for short). A history is CC if there exists a causal
+order that explains the return value of all operations in the history [9]. Formally,
+Definition 1. A history ℎ satisfies CC w.r.t a specification 𝑆 if there exists a
+strict partial order, called causal order, co ⊆ 𝑂 × 𝑂, such that, for all operations
+𝑜 ∈ 𝑂 in ℎ, there exists a specification sequence 𝜌𝑜 ∈ 𝑆 such that axioms AxCausal
+and AxCausalValue hold (see 1).
+Axiom AxCausal states that the causal order should at least include the pro-
+gram order. Axiom AxCausalValue states that, for each operation 𝑜 ∈ 𝑂, a valid
+sequence of the specification 𝑆 can be obtained by sequentializing the causal
+history of 𝑜 i.e., all operations that precede 𝑜 in the causal order. In addition,
+                     Checking Causal Consistency of Distributed Databases        5
+
+AxCausal       po ⊆ co
+AxArb          co ⊆ arb
+AxCausalValue CausalHist(𝑜){𝑜} ⪯ 𝜌𝑜
+AxCausalSeq CausalHist(𝑜){POPast(𝑜)} ⪯ 𝜌𝑜
+AxCausalArb CausalArb(𝑜){𝑜} ⪯ 𝜌𝑜
+where:
+CausalHist(𝑜) = (CausalPast(𝑜), co, ℓ)
+CausalArb(𝑜) = (CausalPast(𝑜), arb, ℓ)
+CausalPast(𝑜) = {𝑜′ ∈ 𝑂 | (𝑜′ , 𝑜) ∈ co* }
+POPast(𝑜) = {𝑜′ ∈ 𝑂 | (𝑜′ , 𝑜) ∈ po* }
+
+Table 1: Axioms used in the causal consistency definitions.
+
+this sequentialization must also preserve the constraints provided by the causal
+order.
+    Formally, the causal past of 𝑜, CausalPast(𝑜), is the set of operations that
+precede 𝑜 in the causal order. The causal history of 𝑜, CausalHist(𝑜), is the
+restriction of the causal order to the operations in its causal past CausalPast(𝑜).
+The notation CausalHist(𝑜){𝑜} means that only the return value of operation 𝑜
+is kept. The axiom AxCausalValue uses CausalHist(𝑜){𝑜} because a process is not
+required to be consistent with the values it has returned in the past or the values
+returned by the other processes.
+    The notations CausalHist(𝑜){𝑜} ⪯ 𝜌𝑜 means that CausalHist(𝑜){𝑜} can be
+sequentialized to a sequence 𝜌𝑜 in the specification. We will formally define these
+last two notations in the next sections.
+    For a better understanding of this model, consider the following examples.
+
+Example 1. The history 1d is CC, we can consider that write(𝑥, 1) is not causally-
+related to write(𝑥, 2). Therefore, 𝑝2 can execute them in any order.
+
+Example 2. The history 1e is not CC. The reason is that, a causal order that
+explains the return values of all operations in the history cannot be found. In-
+tuitively, since read(𝑦, 1) reads the value from write(𝑦, 1), in any causal order,
+write(𝑦, 1) should precede read(𝑦, 1). By transitivity of the causal order and be-
+cause any causal order should include the program order, write(𝑥, 1) precedes
+write(𝑥, 2) in the causal order (write(𝑥, 1) and write(𝑥, 2) are causally related).
+However, process 𝑝3 inverse this order. This is a contradiction with the informal
+definition of CC which requires that every process should see causally related
+operations in the same order.
+
+
+
+Causal convergence Causal convergence (CCv, for short) is stronger than CC.
+It ensures that, as long as no new updates are submitted, all processes even-
+tually converge towards the same state. In addition of seeing causally related
+operations in the same order (CC), causal convergence uses a total order over
+all the operations in a history to agree on how to order operations which are not
+6       Rachid Zennou et al.
+
+        𝑝1 :          𝑝2 :                    𝑝1 :          𝑝2 :
+        write(𝑧, 1)   write(𝑥, 2)             write(𝑥, 1)   write(𝑥, 2)
+        write(𝑥, 1)   read(𝑧, 0)              read(𝑥, 2)    read(𝑥, 1)
+        write(𝑦, 1)   read(𝑦, 1)
+                      read(𝑥, 2)              (b) CM but not CCv
+
+        (a) CCv but not CM
+        𝑝1 :        𝑝2 :                      𝑝1 :          𝑝2 :
+        write(𝑥, 1) write(𝑥, 2)               write(𝑥, 1)   write(𝑥, 2)
+        read(𝑦, 0)  read(𝑦, 0)                              read(𝑥, 1)
+        write(𝑦, 1) write(𝑦, 2)                             read(𝑥, 2)
+        read(𝑥, 1)  read(𝑥, 2)
+                                              (d) CC but not CCv nor CM
+        (c) CC , CCv and CM
+
+                 𝑝1 :               𝑝2 :            𝑝3 :
+                 write(𝑥, 1)        read(𝑦, 1)      read(𝑥, 2)
+                 write(𝑦, 1)        write(𝑥, 2)     read(𝑥, 1)
+
+                 (e) not CC (nor CCv, nor CM)
+
+
+
+Fig. 1: Histories illustrating the differences between the causal consistency mod-
+els CC, CCv, and CM.
+causally related[9]. This order is called the arbitration order and denoted by arb.
+Similarly to the causal order, the arbitration order is existentially quantified in
+the CCv definition. Formally,
+
+Definition 2. A history is CCv w.r.t a specification 𝑆 if there exist a strict
+partial order co ⊆ 𝑂 × 𝑂 and a strict total order arb ⊆ 𝑂 × 𝑂 such that, for
+each operation 𝑜 ∈ 𝑂 in ℎ, there exists a specification sequence 𝜌𝑜 ∈ 𝑆 such that
+the axioms AxCausal, AxArb, and AxCausalArb hold.
+
+Axiom AxArb states that the arbitration order arb should at least include the
+causal order co. Axiom AxCausalArb states that, sequentializing the operations
+that are in the causal past of 𝑜 to explain the return value of an operation 𝑜,
+should respect the arbitration order arb.
+    We now present two examples, one which satisfies CCv and another one which
+violates it.
+
+Example 3. The history 1a is CCv, we can set an arbitration order in which
+write(𝑥, 1) is ordered before write(𝑥, 2).
+
+Example 4. The history 1b is not CCv. In order to read read(𝑥, 2), write(𝑥, 1)
+must be ordered before write(𝑥, 2) in the arbitration order. On the other hand,
+to read read(𝑥, 1), write(𝑥, 2) must be ordered before write(𝑥, 1) in the arbitration
+order, that is not possible.
+                      Checking Causal Consistency of Distributed Databases          7
+
+Causal memory The third model we consider is causal memory (CM, for short)
+that is also stronger than CC. It guarantees that each process should observe
+concurrent operations in the same order. In addition, this order should be main-
+tained throughout its whole execution, but it can differ from one process to
+another [9]. Formally,
+
+Definition 3. A history ℎ is CM w.r.t. a specification 𝑆 if there exists a strict
+partial order co ⊆ 𝑂 × 𝑂 such that, for each operation 𝑜 ∈ 𝑂 in ℎ, there exists a
+specification sequence 𝜌𝑜 ∈ 𝑆 such that axioms AxCausal and AxCausalSeq hold.
+
+   Compared to CC, CM requires that each process should be consistent with
+the return values it has returned in the past. However, a process is not required
+to be consistent with respect to the return values provided by other processes.
+Therefore, AxCausalSeq states:
+
+                          CausalHist(𝑜){POPast(𝑜)} ⪯ 𝜌𝑜
+
+where CausalHist(𝑜){POPast(𝑜)} is the causal history where we only keep the re-
+turn values of the operations that precede 𝑜 in the program order (in POPast(𝑜)).
+    As we noticed above, CC is weaker that CCv and CM. For instance, the history
+in Figure 1d is CC but not CCv nor CM. It is CC, we can consider that write(𝑥, 1)
+is not causally-related to write(𝑥, 2). On the other hand, for reading the value 1
+the process 𝑝2 decides to order write(𝑥, 2) before write(𝑥, 1), then it changes this
+order to read the value 2. This is not allowed under CM nor under CCv.
+Both CCv and CM require that each process should observe concurrent operations
+in the same order. In CM this order can differ from one process to another. It
+seems that this intuitive description implies that CCv is stronger than CM but
+these two models are actually incomparable. The following examples illustrate
+the differences between these models.
+
+Example 5. For instance, the history in Figure 1b is CM, but not CCv. It is not
+CCv because reading the value 1 from 𝑥 in the 𝑝1 implies that write(𝑥, 1) is
+ordered after write(𝑥, 2) while reading the value 2 from 𝑥 in 𝑝2 implies that it
+write(𝑥, 2) is ordered after write(𝑥, 1). This is allowed by CM as different processes
+can observe concurrent write operations in different orders.
+
+Example 6. The history in Figure 1a is CCv but not CM. CCv requires that con-
+current operations should be observed in the same order by all processes. Thus, a
+possible order for concurrent write operations write(𝑥, 1) and write(𝑥, 2) is to or-
+der write(𝑥, 2) after write(𝑥, 1). Under CM, in order to read read(𝑧, 0), write(𝑥, 1)
+should be ordered after write(𝑥, 2) while to read 2 from 𝑥, write(𝑥, 2) must be
+ordered after write(𝑥, 1) (write(𝑥, 1) must have been observed because 𝑝2 reads
+1 from 𝑦 and the writes on 𝑥 and 𝑦 are causally-related).
+
+  The Figure 2 summarizes the relationships between the causal consistency
+models presented in this section.
+8       Rachid Zennou et al.
+
+
+
+
+Fig. 2: Relationships between causal consistency models. Directed arrows denote
+the “weaker-than” relation while dashed lines connect incomparable models.
+3.2 Causal consistency violations
+Now, we will see, for each definition of causal consistency, how to characterize
+histories that are not conform to causal consistency through the presence of
+some specific sets of operations. In [9], computations that are violations of CC,
+CCv or CM are characterized by the occurrence of a finite number of particular
+(small) sets of ordered events, called bad-patterns. In this section, we recall the
+bad-patterns corresponding to each model and their definitions (Table 2 and 3).
+
+
+CC Bad-patterns. We now give the CC bad-patterns as defined in[9]. These
+bad-patterns are defined using the relation of causality co which is given by the
+program order po or the write-read relation wr or any transitive composition of
+these relations i.e., co = (po ∪ wr)+ .
+Lemma 1. ([9]) A history is CC if it does not contain any of the bad-patterns
+CyclicCO, WriteCOInitRead, ThinAirRead and WriteCORead.
+Example 7. The history in Figure 1e contains the bad-patternWriteCORead. The
+write(𝑥, 1) is causally ordered before write(𝑥, 2) by the transitivity. On the other
+hand, the process 𝑝3 , read(𝑥, 1) from write(𝑥, 1) (wr(write(𝑥, 1),read(𝑥, 1))). The
+read read(𝑥, 1) is also causally-related to write(𝑥, 2) by transitivity. The history
+in Figure 1c does not contain any of the bad-patterns, so it is CC , CCv and CM.
+
+CCv bad-patterns. As we have seen before, CCv is stronger than CC. There-
+fore, CCv excludes all the CC bad-patterns we have seen above (CyclicCO,
+WriteCOInitRead, ThinAirRead and WriteCORead). In addition, CCv excludes
+another bad pattern called CyclicCF, defined in terms of a conflict relation cf.
+Intuitively, two writes 𝑤1 and 𝑤2 on the same variable are in conflict, if 𝑤1 is
+causally-related to a read taking its value from 𝑤2 . Formally, cf is defined as
+(write(𝑥, 𝑣), write(𝑥, 𝑣 ′ )) ∈ cf iff (write(𝑥, 𝑣), read(𝑥, 𝑣 ′ )) ∈ co and
+                                     (write(𝑥, 𝑣 ′ ), read(𝑥, 𝑣 ′ )) ∈ wr, for some read(𝑥, 𝑣 ′ )
+Then,
+Lemma 2. ([9]) A history is CCv if it is CC and does not contain the bad-pattern
+CyclicCF.
+Example 8. The History in Figure 1b is not CCv as it contains the bad-pattern
+CyclicCF. In order to read read(𝑥, 2), write(𝑥, 2) must precedes write(𝑥, 2) in the
+conflict order. On the other hand, to read read(𝑥, 1), write(𝑥, 2) must be ordered
+before write(𝑥, 1) in the conflict order. Thus, we get a cycle in cf.
+                       Checking Causal Consistency of Distributed Databases                 9
+
+         CC                    CCv                       CM
+         CyclicCO              CyclicCO                  CyclicCO
+         WriteCOInitRead       WriteCOInitRead           WriteCOInitRead
+         ThinAirRead           ThinAirRead               ThinAirRead
+         WriteCORead           WriteCORead               WriteCORead
+                               CyclicCF                  WriteHBInitRead
+                                                         CyclicHB
+
+Table 2: Bad-patterns for each causal consistency model
+
+
+
+   CyclicCO                the causality relation co is cylic
+   WriteCOInitRead         a read(𝑥, 0) is causally preceded by a write(𝑥, 𝑣) (i.e.,
+                           (write(𝑥, 𝑣)), read(𝑥, 0) ∈ co) such that v ̸= 0
+   ThinAirRead             there is a read(𝑥, 𝑣) operation that reads a value v such
+                           that v ̸= 0 that it is never written before i.e., it can not
+                           be related to any write by a wr relation.
+   WriteCORead             there exist write operations 𝑤1 , 𝑤2 such that var(𝑤1 ) =
+                           var(𝑤2 ) and a read operation 𝑟1 such that wr(𝑤1 , 𝑟1 ). In
+                           addition, (𝑤1 , 𝑤2 ) ∈ co and (𝑤2 , 𝑟1 ) ∈ co.
+   WriteHBInitRead         there exist a read(𝑥, 0) and a write(𝑥, 𝑣) (v ̸= 0) such that
+                           (write(𝑥, 𝑣), read(𝑥, 0)) ∈ hb𝑜 for some operation o, with
+                           (𝑟, 𝑜) ∈ po* .
+   CyclicHB                the hb𝑜 relation is cyclic for some operation o
+   CyclicCF                the union of cf and co (cf ∪ co) is cyclic
+
+Table 3: Bad-patterns definitions
+
+CM bad-Patterns. As we have seen above, CM is also stronger than CC.
+Therefore, CM excludes all the CC bad-patterns (CyclicCO, WriteCOInitRead,
+ThinAirRead and WriteCORead). In addition, CM excludes two additional bad-
+patterns (WriteHBInitRead and CyclicHB), defined using a happened-before
+relation per operation hb𝑜 . Formally, hb𝑜 is defined as follows.
+
+Definition 4. Let h=⟨𝑂, po, wr⟩ be a history. For every operation 𝑜 in ℎ, let
+hb𝑜 be the smallest transitive relation such that:
+
+1. co|CausalPast(𝑜) ⊆ hb𝑜, which means that if two operations are causally re-
+   lated and each one is causally related to 𝑜, then they are related by hb𝑜 i.e.,
+   (𝑜1 , 𝑜2 ) ∈ hb𝑜 if (𝑜1 , 𝑜2 ) ∈ co, (𝑜1 , 𝑜) ∈ co and (𝑜2 , 𝑜) ∈ co* (where co* is the
+   reflexive closure of co), and
+2. two writes 𝑤1 and 𝑤2 are related by hb𝑜 if 𝑤1 is hb𝑜 -related to a read taking
+   its value from 𝑤2 and that read is done by the same thread executing 𝑜 and
+   before 𝑜, i.e., (write(𝑥, 𝑣), write(𝑥, 𝑣 ′ )) ∈ hb𝑜 if (write(𝑥, 𝑣), read(𝑥, 𝑣 ′ )) ∈ hb𝑜 ,
+   (write(𝑥, 𝑣 ′ ), read(𝑥, 𝑣 ′ )) ∈ wr and (read(𝑥, 𝑣 ′ ), 𝑜) ∈ po* for some
+   read(𝑥, 𝑣 ′ ).
+
+Then,
+10      Rachid Zennou et al.
+
+Lemma 3. ([9]) A history is CM if it is CC and does not contain any of the
+bad-patterns WriteHBInitRead and CyclicHB.
+
+Example 9. 1. The history 1a contains the bad-pattern WriteHBInitRead so
+    it is not CM. Let’s consider ℎ𝑏 = hbread(𝑥,2) . We have (write(𝑧, 1),write(𝑥, 1))
+    ∈ po and (write(𝑥, 1), write(𝑥, 2)) ∈ ℎ𝑏 ((write(𝑥, 1),read(𝑥, 2) ∈ co implies
+    (write(𝑥, 1),write(𝑥, 2) ∈ co) and (write(𝑥, 2),read(𝑧, 0) ∈ po), thus by transi-
+    tivity we have (write(𝑧, 1),read(𝑧, 0) ∈ ℎ𝑏.
+ 2. The history in Figure 1c does not contain any of the bad-patterns, so it is
+    CC , CCv and CM.
+
+
+4    An improved characterization of CM
+The proposed characterization of CM in [9] requires computing the hb𝑜 relation
+for all operations and then check for CM bad-patterns. Let’s call this approach
+CM 1. Now, we will show that it is enough to check the CM-bad patterns for only
+a small set of operations (for only last operation in each process). We propose in
+the following a succinct but equivalent approach for checking CM. We show that
+it improves the verification runtime (Section 6). Let’s call this new approach
+CM 2.
+    To prove the equivalence between the two approaches, we have to prove some
+intermediate results. First, we define hb𝑖𝑜 to denote a controlled saturated version
+of hb𝑜 .
+
+Definition 5. Let h=⟨𝑂, po, wr⟩ be a history. For every operation 𝑜 in ℎ,
+1. let hb0𝑜 be the relation such that if two operations are causally related and each
+   one is causally related to 𝑜, then they are related by hb0𝑜 i.e., (𝑜1 , 𝑜2 ) ∈ hb𝑜
+   if and only if (𝑜1 , 𝑜2 ) ∈ co, (𝑜1 , 𝑜) ∈ co and (𝑜2 , 𝑜) ∈ co* (where co* is the
+   reflexive closure of co),
+2. let hb𝑖𝑜 for 𝑖 > 0 be the transitive relation if two writes 𝑤1 and 𝑤2 are related
+   by hb𝑖𝑜 if 𝑤1 is (∪𝑗<𝑖 hb𝑗𝑜 )+ (transitive closure of all the previous hb𝑗𝑜 ) related
+   to a read taking its value from 𝑤2 and that read is done by the same thread
+   executing 𝑜 and before 𝑜, i.e., (write(𝑥, 𝑣), write(𝑥, 𝑣 ′ )) ∈ hb𝑖𝑜 if and only
+   if (write(𝑥, 𝑣), read(𝑥, 𝑣 ′ )) ∈ (∪𝑗<𝑖 hb𝑗𝑜 )+ , (write(𝑥, 𝑣 ′ ), read(𝑥, 𝑣 ′ )) ∈ wr and
+   (read(𝑥, 𝑣 ′ ), 𝑜) ∈ po* for some read(𝑥, 𝑣 ′ ).
+
+Theorem 1. For all 𝑜, hb𝑜 = (∪𝑖≥0 hb𝑖𝑜 )+
+
+Proof. By construction, (∪𝑖≥0 hb𝑖𝑜 )+ satisfies definition 4. Because hb𝑜 is the
+smallest one, hb𝑜 ⊆ (∪𝑖≥0 hb𝑖𝑜 )+ . Also, by construction, all the relations in
+(∪𝑖≥0 hb𝑖𝑜 )+ must be present in hb𝑜 because they are constructed statically from
+co and wr. So hb𝑜 ⊇ (∪≥ hb𝑖𝑜 )+ .
+
+    Now, we prove that hb𝑜 is included in hb𝑜′ if 𝑜 is executed before 𝑜′ in a
+same thread. Then, checking hb𝑜 acyclicity of po-maximal operations is enough
+to decide for all operations. To prove this, we use the hb𝑖𝑜 definition.
+                       Checking Causal Consistency of Distributed Databases             11
+
+Lemma 4. If (𝑜, 𝑜′ ) ∈ po then hb𝑖𝑜 ⊆ hb𝑖𝑜′ for 𝑖 ≥ 0
+
+Proof. We will prove by induction on 𝑖.
+
+ – Base case. 𝑖 = 0. Since (𝑜, 𝑜′ ) ∈ po ⊆ co, (𝑜1 , 𝑜) ∈ co and (𝑜2 , 𝑜) ∈ co*
+   implies, (𝑜1 , 𝑜′ ) ∈ co and (𝑜2 , 𝑜′ ) ∈ co* . So all the hb0𝑜 ⊆ hb0𝑜′ .
+ – Inductive step. If there exists two writes write(𝑥, 𝑣), write(𝑥, 𝑣 ′ ) and a read
+   read(𝑥, 𝑣 ′ ) with (write(𝑥, 𝑣), read(𝑥, 𝑣 ′ )) ∈ (∪𝑗<𝑖 hb𝑗𝑜 )+ ,
+   (write(𝑥, 𝑣 ′ ), read(𝑥, 𝑣 ′ )) ∈ wr and (read(𝑥, 𝑣 ′ ), 𝑜) ∈ po* to force
+   (write(𝑥, 𝑣), write(𝑥, 𝑣 ′ )) ∈ hb𝑖𝑜 relation, then it is also true that,
+   (write(𝑥, 𝑣), read(𝑥, 𝑣 ′ ) ∈ (∪𝑗<𝑖 hb𝑗𝑜′ )+ (induction hypothesis) and
+   (read(𝑥, 𝑣 ′ ), 𝑜′ ) ∈ po* . So (write(𝑥, 𝑣), write(𝑥, 𝑣 ′ )) ∈ hb𝑖𝑜′ is forced as well.
+   Thus, hb𝑖𝑜 ⊆ hb𝑖𝑜′ .
+
+Corollary 1. If (𝑜, 𝑜′ ) ∈ po then hb𝑜 ⊆ hb𝑜′ .
+
+Proof. Direct consequence of theorem 1 and lemma 4.
+
+    Finally, we can prove the equivalence between the two CM verification ap-
+proaches. Both of the approaches requires the history to be CC. So, we just need
+to do it for the acyclicity of hb𝑜 and for the WriteHBInitRead bad-pattern.
+    CM 1 requires hb𝑜 for all 𝑜 to be acyclic, whereas CM 2 requires hb𝑜 for a
+subset of operations 𝑜 (po-maximal operations) to be acyclic. So trivially CM 1
+implies CM 2.
+    For the other direction, we use corollary 1. If (𝑜, 𝑜′ ) ∈ po then hb𝑜 ⊆ hb𝑜′ .
+Hence, a cycle in hb𝑜 for some 𝑜 (if 𝑜 is po-maximal operation, then we are done)
+will be also present in hb𝑜′ for the po-maximal 𝑜′ after 𝑜 because (𝑜, 𝑜′ ) ∈ po.
+    Now, we will prove that it is enough to check the WriteHBInitRead bad-
+pattern for only po-maximal operations as well.
+    Consider two operations 𝑜1 and 𝑜2 in a history ℎ such that (𝑜1 , 𝑜2) ∈ po.
+Suppose that there exists a bad-pattern WriteHBInitRead for 𝑜1 i.e., there exist
+a read(𝑥, 0) and a write(𝑥, 𝑣) (v ̸= 0) such that (write(𝑥, 𝑣), read(𝑥, 0)) ∈ hb𝑜1 ,
+with (𝑟, 𝑜1 ) ∈ po* . Since (𝑜1 , 𝑜2 ) ∈ po and using the corollary 1, we have hb𝑜1 ∈
+hb𝑜2 , then (write(𝑥, 𝑣), read(𝑥, 0)) ∈ hb𝑜2 and (𝑟, 𝑜2 ) ∈ po* (because of (𝑟, 𝑜1 ) ∈
+po* ). Therefore, the bad-pattern WriteHBInitRead exists for 𝑜2 as well.
+    Then,
+Theorem 2. CM 1 and CM 2 are equivalent.
+    Notice that CM 2 is characterized by the same CM bad-patterns described
+above, it is just that the hb𝑜 is only computed for each po-maximal operation o
+in the history not for all operations (see next section).
+
+
+5    Reduction to Datalog queries solving
+
+In this section, we show our reduction of the problem of checking whether a
+given computation is a CC, CCv or CM violation to the problem of Datalog queries
+12     Rachid Zennou et al.
+
+solving. Datalog is a logic programming language that does not allow functions as
+predicate arguments. The advantage of using Datalog is that it provides a high
+level language for naturally defining constraints on relations and that solving
+Datalog queries is polynomial time [28].
+
+5.1   Datalog
+A rule in datalog is a statement of the following form:
+                              𝑟1 (𝑣1 ) :- 𝑟2 (𝑣2 ), ..., 𝑟𝑖 (𝑣𝑖 )
+Where i≥ 1, 𝑟𝑖 are the names of predicates (relations) and 𝑣𝑖 are arguments. A
+Datalog program is a finite set of Datalog rules over the same schema [6]. The
+LHS is called the rule head and represents the outcome of the query, while the
+RHS is called the rule body.
+Example 10. For instance, this Datalog program computes the transitivity clo-
+sure of a given graph.
+trans(X,Y) :- edge(X,Y).
+trans(X,Y) :- trans(X,Z), trans(Z,Y).
+
+Where the fact edge(a,b) means that there exists a direct edge from a to b.
+In the literature, there are three definitions for the semantics of Datalog pro-
+grams, model theoretic, proof-theoretic and fixpoint semantics [6]. In this paper,
+we have considered the fix-point semantics.
+
+Fix-point semantics. This approach is based on the fix-point theory. Given
+a function 𝑓 (), its fix-point is an element 𝑒 from its domain which is mapped
+by the function 𝑓 to itself i.e., 𝑓 (𝑒) = 𝑒. Each Datalog program has an associ-
+ated operator called immediate consequence operator. Applying repeatedly this
+operator on existing facts generates new facts until getting a fixed point.
+
+5.2   Histories Encoding
+In our approach, extracted relations from a history (po, wr...) are represented
+as predicates called facts, while the algorithm for fixed point computation is
+formulated as Datalog recursive relations called inference rules.
+We first introduce all the facts. For instance, consider the fact po(a,b) which
+represents the program order from the operation a to the operation b (similarly
+po(b,c)),
+po(a,b).
+po(b,c).
+
+Now, we define the necessary relations (axioms) for our approach.
+ – rd(X), X is a read operation
+                     Checking Causal Consistency of Distributed Databases    13
+
+ – wrt(X), X is a write operation
+ – po(X,Y), X precedes Y in the po order.
+ – wr(X,Y), Y reads the value from a write operation X (wr relation)
+ – sv(X,Y), the operations X and Y accessed to the same variable.
+Then, we define the inference rules used to generate derived relations. For in-
+stance, the following rule states that the causal relation co is transitive.
+co(X,Z) :- co(X,Y), co(Y,Z).
+
+
+
+5.3   Bad-patterns Encoding
+We have expressed all the bad-patterns as Datalog inference rules, except
+ThinAirRead that we verify externally as it contains a universal quantification
+over all operations. There exist two kinds of bad-patterns. The first type is
+related to the existence of a cycle in a relation. For instance, the bad-pattern
+CyclicCO that can be expressed as
+:- co(X,Y), co(Y,X).
+
+Intuitively, this means that there exist no operations X and Y such that X
+precedes Y in the causal order and Y also precedes X in the causal order. Since
+co is transitive, we can simply write it as
+:- co(X,X).
+
+The second type is related to the occurrence of some operations in some partic-
+ular order. For instance, WriteCORead can be expressed as follows
+:- co(X,Y), co(Y,Z), wr(X,Z), wrt(X), wrt(Y), rd(Z), sv(X,Y), sv(Y,Z).
+
+Intuitively, this means that there exist no write operations X and Y on the same
+variable and a read operation Z which takes the value from X such that X pre-
+cedes Y in the causal order and Y precedes Z in the causal order.
+
+
+
+CC bad-patterns encoding. In addition of the CyclicCO bad-pattern we have
+seen above, we will see how the other CC bad-patterns are encoded. Consider
+the following example which presents the Datalog program corresponding to an
+execution.
+Example 11. This example represents the history 1b Datalog program for check-
+ing CC:
+% Facts
+wrt("w(x,1,id0)").
+po("w(x,1,id0)","r(x,2,id1)").
+sv("r(x,2,id1)","w(x,1,id0)").
+sv("w(x,2,id2)","w(x,1,id0)").
+14     Rachid Zennou et al.
+
+sv("r(x,1,id3)","w(x,1,id0)").
+rd("r(x,2,id1)").
+sv("w(x,1,id0)","r(x,2,id1)").
+wr("w(x,2,id2)","r(x,2,id1)").
+sv("w(x,2,id2)","r(x,2,id1)").
+sv("r(x,1,id3)","r(x,2,id1)").
+wrt("w(x,2,id2)").
+sv("w(x,1,id0)","w(x,2,id2)").
+sv("r(x,2,id1)","w(x,2,id2)").
+po("w(x,2,id2)","r(x,1,id3)").
+sv("r(x,1,id3)","w(x,2,id2)").
+rd("r(x,1,id3)").
+wr("w(x,1,id0)","r(x,1,id3)").
+sv("w(x,1,id0)","r(x,1,id3)").
+sv("r(x,2,id1)","r(x,1,id3)").
+sv("w(x,2,id2)","r(x,1,id3)").
+initread("r(a,0,ida)").
+% Inference rules
+co(X,Y) :- po(X,Y).
+co(X,Y) :- wr(X,Y).
+co(X,Z) :- co(X,Y), co(Y,Z). % Transitivity
+% CC bad-patterns
+:- co(X,X). % CyclicCO
+:- co(X,Y), wrt(X), initread(Y), sv(X,Y). % WriteCOInitRead
+:- co(X,Y), co(Y,Z), wr(X,Z), wrt(X), wrt(Y), rd(Z), sv(X,Y), sv(Y,Z).
+% WriteCORead
+
+
+Notice that, since the bad pattern WriteCOInitRead includes a predicate ini-
+tread(Y), we add the initread(”r(a,0,ida)”) to the programs that do not contain
+a read which reads the initial value.
+    The result of running this Datalog program using the online clingo version
+(https://potassco.org/clingo/run/) is shown in the following:
+clingo version 5.5.0
+Reading from stdin
+Solving...
+Answer: 1
+po("w(x,1,id0)","r(x,2,id1)") po("w(x,2,id2)","r(x,1,id3)") co("w(x,1,id0
+    )","r(x,2,id1)") co("w(x,2,id2)","r(x,1,id3)") co("w(x,2,id2)","r(x
+    ,2,id1)") co("w(x,1,id0)","r(x,1,id3)") wr("w(x,2,id2)","r(x,2,id1)")
+     wr("w(x,1,id0)","r(x,1,id3)") sv("r(x,2,id1)","w(x,1,id0)") sv("w(x
+    ,2,id2)","w(x,1,id0)") sv("r(x,1,id3)","w(x,1,id0)") sv("w(x,1,id0)",
+    "r(x,2,id1)") sv("w(x,2,id2)","r(x,2,id1)") sv("r(x,1,id3)","r(x,2,
+    id1)") sv("w(x,1,id0)","w(x,2,id2)") sv("r(x,2,id1)","w(x,2,id2)") sv
+    ("r(x,1,id3)","w(x,2,id2)") sv("w(x,1,id0)","r(x,1,id3)") sv("r(x,2,
+    id1)","r(x,1,id3)") sv("w(x,2,id2)","r(x,1,id3)") initread("r(a,0,ida
+    )") wrt("w(x,1,id0)") wrt("w(x,2,id2)") rd("r(x,2,id1)") rd("r(x,1,
+    id3)")
+SATISFIABLE
+                   Checking Causal Consistency of Distributed Databases   15
+
+
+
+Models       : 1
+Calls        : 1
+Time         : 0.008s (Solving: 0.00s 1st Model: 0.00s Unsat: 0.00s)
+CPU Time     : 0.000s
+
+   Now, let’s see how CCv and CM bad-patterns are encoded. Since the CCv/CM
+bad-patterns include CC bad-patterns, each CCv/CM Datalog program should
+contain CC bad-patterns which we have already seen above in addition of some
+other rules we will see in the next sections.
+
+CCv bad-patterns encoding. The CCv bad-patterns are encoded as follows:
+% CCv bad-patterns
+cf(X,Y) :- co(X,Z), wr(Y,Z), wrt(X), sv(X,Y), sv(X,Z). %Conflict order CF
+cf(X,Y) :- cf(X,Z), cf(Z,Y). %Transitivity
+cfco(X,Y) :- co(X,Y). %cfco= CF U CO, cfco is the union of cf and co.
+cfco(X,Y) :- cf(X,Y). %cfco= CF U CO
+%CCv bad-pattern
+ :- cfco(X,Y), cfco(Y,X). %CyclicCF CF U CO
+
+
+   Let’s consider an example of CCv Datalog programs. As we have seen, the
+example 1b is not CCv so the following Datalog program for checking CCv is
+not satisfiable.
+% Facts
+wrt("w(x,1,id0)").
+po("w(x,1,id0)","r(x,2,id1)").
+sv("r(x,2,id1)","w(x,1,id0)").
+sv("w(x,2,id2)","w(x,1,id0)").
+sv("r(x,1,id3)","w(x,1,id0)").
+rd("r(x,2,id1)").
+sv("w(x,1,id0)","r(x,2,id1)").
+wr("w(x,2,id2)","r(x,2,id1)").
+sv("w(x,2,id2)","r(x,2,id1)").
+sv("r(x,1,id3)","r(x,2,id1)").
+wrt("w(x,2,id2)").
+sv("w(x,1,id0)","w(x,2,id2)").
+sv("r(x,2,id1)","w(x,2,id2)").
+po("w(x,2,id2)","r(x,1,id3)").
+sv("r(x,1,id3)","w(x,2,id2)").
+rd("r(x,1,id3)").
+wr("w(x,1,id0)","r(x,1,id3)").
+sv("w(x,1,id0)","r(x,1,id3)").
+sv("r(x,2,id1)","r(x,1,id3)").
+sv("w(x,2,id2)","r(x,1,id3)").
+initread("r(a,0,ida)").
+% CC inference rules
+co(X,Y) :- po(X,Y).
+16     Rachid Zennou et al.
+
+co(X,Y) :- wr(X,Y).
+co(X,Z) :- co(X,Y), co(Y,Z). % Transitivity
+% CC bad-patterns
+:- co(X,X). % CyclicCO
+:- co(X,Y), wrt(X), initread(Y), sv(X,Y). % WriteCOInitRead
+:- co(X,Y), co(Y,Z), wr(X,Z), wrt(X), wrt(Y), rd(Z), sv(X,Y), sv(Y,Z).
+% WriteCORead
+
+% CCv inference rules
+cf(X,Y) :- co(X,Z), wr(Y,Z), wrt(X), sv(X,Y), sv(X,Z). %Conflict order CF
+cf(X,Y) :- cf(X,Z), cf(Z,Y). %Transitivity
+cfco(X,Y) :- co(X,Y). %cfco= CF U CO, cfco is the union of cf and co.
+cfco(X,Y) :- cf(X,Y). %cfco= CF U CO
+%CCv bad-pattern
+ :- cfco(X,Y), cfco(Y,X). %CyclicCF CF U CO
+
+ clingo version 5.5.0
+Reading from stdin
+Solving...
+UNSATISFIABLE
+
+Models        : 0
+Calls         : 1
+Time          : 0.009s
+CPU Time      : 0.000s
+
+
+
+CM bad-patterns encoding. The CM bad-patterns are encoded as follows:
+
+%CM inference rules
+hb(X,O,O) :- co(X,O). %hbo initialized to causal order
+hb(X,Y,O) :- hb(Y,O,O), co(X,Y).
+hb(X,Y,O) :- hb(X,Z,O), po(Z,O), wr(Y,Z), wrt(X), sv(X,Y).% hbo
+    definition
+hb(X,Y,O) :- hb(X,Z,O), wr(Y,Z), wrt(X), sv(X,Y). % hbo definition
+hb(X,Z,O) :- hb(X,Y,O), hb(Y,Z,O). %Transitivity
+%CM bad-patterns
+:- hb(X,Y,O), wrt(X), sv(X,Y), po(Y,O), initread(Y). %WriteHBInitRead
+:- hb(X,Y,O), hb(Y,X,O). %CyclicHB
+
+    As we have mentioned in the section 5, CM 1 and CM 2 are characterized
+by the same CM bad-patterns described above. The only difference is that for the
+CM 2, we have added a function which identifies the po-maximal operation in
+each thread. We replace then the operation ”𝑂” in the CM bad-patterns above
+by these identified operations (last operation in each thread) instead of replacing
+it by all read/write operations in the history (CM 1).
+    For a better understanding, consider the instantiation of the CM bad-patterns
+for CM 1 and CM 2.
+                      Checking Causal Consistency of Distributed Databases   17
+
+ – For CM 1: We replace ”𝑂” by all operations in the history.
+
+
+
+%CM inference rules
+
+hb(X,w(x,1,id0),w(x,1,id0)) :- co(X,w(x,1,id0)).
+hb(X,Y,w(x,1,id0)) :- hb(Y,w(x,1,id0),w(x,1,id0)), co(X,Y).
+hb(X,Y,w(x,1,id0)) :- hb(X,Z,w(x,1,id0)), po(Z,w(x,1,id0)), wr(Y,Z), wrt(
+    X), sv(X,Y).
+hb(X,Y,w(x,1,id0)) :- hb(X,Z,w(x,1,id0)), wr(Y,Z), wrt(X), sv(X,Y).
+hb(X,Z,w(x,1,id0)) :- hb(X,Y,w(x,1,id0)), hb(Y,Z,w(x,1,id0)).
+%CM bad-patterns
+:- hb(X,Y,w(x,1,id0)), wrt(X), sv(X,Y), po(Y,w(x,1,id0)), initread(Y).
+:- hb(X,Y,w(x,1,id0)), hb(Y,X,w(x,1,id0)).
+%CM inference rules
+hb(X,w(x,2,id2),w(x,2,id2)) :- co(X,w(x,2,id2)).
+hb(X,Y,w(x,2,id2)) :- hb(Y,w(x,2,id2),w(x,2,id2)), co(X,Y).
+hb(X,Y,w(x,2,id2)) :- hb(X,Z,w(x,2,id2)), po(Z,w(x,2,id2)), wr(Y,Z), wrt(
+    X), sv(X,Y).
+hb(X,Y,w(x,2,id2)) :- hb(X,Z,w(x,2,id2)), wr(Y,Z), wrt(X), sv(X,Y).
+hb(X,Z,w(x,2,id2)) :- hb(X,Y,w(x,2,id2)), hb(Y,Z,w(x,2,id2)).
+%CM bad-patterns
+:- hb(X,Y,w(x,2,id2)), wrt(X), sv(X,Y), po(Y,w(x,2,id2)), initread(Y).
+:- hb(X,Y,w(x,2,id2)), hb(Y,X,w(x,2,id2)).
+
+%CM inference rules
+hb(X,"r(x,2,id1)","r(x,2,id1)") :- co(X,"r(x,2,id1)").
+hb(X,Y,"r(x,2,id1)") :- hb(Y,"r(x,2,id1)","r(x,2,id1)"), co(X,Y).
+hb(X,Y,"r(x,2,id1)") :- hb(X,Z,"r(x,2,id1)"), po(Z,"r(x,2,id1)"), wr(Y,Z)
+    , wrt(X), sv(X,Y).
+hb(X,Y,"r(x,2,id1)") :- hb(X,Z,"r(x,2,id1)"), wr(Y,Z), wrt(X), sv(X,Y).
+hb(X,Z,"r(x,2,id1)") :- hb(X,Y,"r(x,2,id1)"), hb(Y,Z,"r(x,2,id1)").
+%CM bad-patterns
+:- hb(X,Y,"r(x,2,id1)"), wrt(X), sv(X,Y), po(Y,"r(x,2,id1)"), initread(Y)
+    .
+:- hb(X,Y,"r(x,2,id1)"), hb(Y,X,"r(x,2,id1)").
+%CM inference rules
+hb(X,"r(x,1,id3)","r(x,1,id3)") :- co(X,"r(x,1,id3)").
+hb(X,Y,"r(x,1,id3)") :- hb(Y,"r(x,1,id3)","r(x,1,id3)"), co(X,Y).
+hb(X,Y,"r(x,1,id3)") :- hb(X,Z,"r(x,1,id3)"), po(Z,"r(x,1,id3)"), wr(Y,Z)
+    , wrt(X), sv(X,Y).
+hb(X,Y,"r(x,1,id3)") :- hb(X,Z,"r(x,1,id3)"), wr(Y,Z), wrt(X), sv(X,Y).
+hb(X,Z,"r(x,1,id3)") :- hb(X,Y,"r(x,1,id3)"), hb(Y,Z,"r(x,1,id3)").
+%CM bad-patterns
+:- hb(X,Y,"r(x,1,id3)"), wrt(X), sv(X,Y), po(Y,"r(x,1,id3)"), initread(Y)
+    .
+:- hb(X,Y,"r(x,1,id3)"), hb(Y,X,"r(x,1,id3)").
+18       Rachid Zennou et al.
+
+ – For CM 2: We replace ”𝑂” by the last operation in each process in the
+   history.
+
+%CM inference rules
+hb(X,"r(x,2,id1)","r(x,2,id1)") :- co(X,"r(x,2,id1)").
+hb(X,Y,"r(x,2,id1)") :- hb(Y,"r(x,2,id1)","r(x,2,id1)"), co(X,Y).
+hb(X,Y,"r(x,2,id1)") :- hb(X,Z,"r(x,2,id1)"), po(Z,"r(x,2,id1)"), wr(Y,Z)
+    , wrt(X), sv(X,Y).
+hb(X,Y,"r(x,2,id1)") :- hb(X,Z,"r(x,2,id1)"), wr(Y,Z), wrt(X), sv(X,Y).
+hb(X,Z,"r(x,2,id1)") :- hb(X,Y,"r(x,2,id1)"), hb(Y,Z,"r(x,2,id1)").
+%CM bad-patterns
+:- hb(X,Y,"r(x,2,id1)"), wrt(X), sv(X,Y), po(Y,"r(x,2,id1)"), initread(Y)
+    .
+:- hb(X,Y,"r(x,2,id1)"), hb(Y,X,"r(x,2,id1)").
+%CM inference rules
+hb(X,"r(x,1,id3)","r(x,1,id3)") :- co(X,"r(x,1,id3)").
+hb(X,Y,"r(x,1,id3)") :- hb(Y,"r(x,1,id3)","r(x,1,id3)"), co(X,Y).
+hb(X,Y,"r(x,1,id3)") :- hb(X,Z,"r(x,1,id3)"), po(Z,"r(x,1,id3)"), wr(Y,Z)
+    , wrt(X), sv(X,Y).
+hb(X,Y,"r(x,1,id3)") :- hb(X,Z,"r(x,1,id3)"), wr(Y,Z), wrt(X), sv(X,Y).
+hb(X,Z,"r(x,1,id3)") :- hb(X,Y,"r(x,1,id3)"), hb(Y,Z,"r(x,1,id3)").
+%CM bad-patterns
+:- hb(X,Y,"r(x,1,id3)"), wrt(X), sv(X,Y), po(Y,"r(x,1,id3)"), initread(Y)
+    .
+:- hb(X,Y,"r(x,1,id3)"), hb(Y,X,"r(x,1,id3)").
+
+     Now let’s consider the whole Datalog programs and their running results.
+
+ – For CM 1:
+
+% Facts
+wrt("w(x,1,id0)").
+po("w(x,1,id0)","r(x,2,id1)").
+sv("r(x,2,id1)","w(x,1,id0)").
+sv("w(x,2,id2)","w(x,1,id0)").
+sv("r(x,1,id3)","w(x,1,id0)").
+rd("r(x,2,id1)").
+sv("w(x,1,id0)","r(x,2,id1)").
+wr("w(x,2,id2)","r(x,2,id1)").
+sv("w(x,2,id2)","r(x,2,id1)").
+sv("r(x,1,id3)","r(x,2,id1)").
+wrt("w(x,2,id2)").
+sv("w(x,1,id0)","w(x,2,id2)").
+sv("r(x,2,id1)","w(x,2,id2)").
+po("w(x,2,id2)","r(x,1,id3)").
+sv("r(x,1,id3)","w(x,2,id2)").
+rd("r(x,1,id3)").
+wr("w(x,1,id0)","r(x,1,id3)").
+sv("w(x,1,id0)","r(x,1,id3)").
+                   Checking Causal Consistency of Distributed Databases   19
+
+sv("r(x,2,id1)","r(x,1,id3)").
+sv("w(x,2,id2)","r(x,1,id3)").
+initread("r(a,0,ida)").
+% Inference rules
+co(X,Y) :- po(X,Y).
+co(X,Y) :- wr(X,Y).
+co(X,Z) :- co(X,Y), co(Y,Z). % Transitivity
+% CC bad-patterns
+:- co(X,X). % CyclicCO
+:- co(X,Y), wrt(X), initread(Y), sv(X,Y). % WriteCOInitRead
+:- co(X,Y), co(Y,Z), wr(X,Z), wrt(X), wrt(Y), rd(Z), sv(X,Y), sv(Y,Z).
+% WriteCORead
+
+
+%CM inference rules
+hb(X,w(x,1,id0),w(x,1,id0)) :- co(X,w(x,1,id0)).
+hb(X,Y,w(x,1,id0)) :- hb(Y,w(x,1,id0),w(x,1,id0)), co(X,Y).
+hb(X,Y,w(x,1,id0)) :- hb(X,Z,w(x,1,id0)), po(Z,w(x,1,id0)), wr(Y,Z), wrt(
+    X), sv(X,Y).
+hb(X,Y,w(x,1,id0)) :- hb(X,Z,w(x,1,id0)), wr(Y,Z), wrt(X), sv(X,Y).
+hb(X,Z,w(x,1,id0)) :- hb(X,Y,w(x,1,id0)), hb(Y,Z,w(x,1,id0)).
+%CM bad-patterns
+:- hb(X,Y,w(x,1,id0)), wrt(X), sv(X,Y), po(Y,w(x,1,id0)), initread(Y).
+:- hb(X,Y,w(x,1,id0)), hb(Y,X,w(x,1,id0)).
+% CM inference rules
+hb(X,w(x,2,id2),w(x,2,id2)) :- co(X,w(x,2,id2)).
+hb(X,Y,w(x,2,id2)) :- hb(Y,w(x,2,id2),w(x,2,id2)), co(X,Y).
+hb(X,Y,w(x,2,id2)) :- hb(X,Z,w(x,2,id2)), po(Z,w(x,2,id2)), wr(Y,Z), wrt(
+    X), sv(X,Y).
+hb(X,Y,w(x,2,id2)) :- hb(X,Z,w(x,2,id2)), wr(Y,Z), wrt(X), sv(X,Y).
+hb(X,Z,w(x,2,id2)) :- hb(X,Y,w(x,2,id2)), hb(Y,Z,w(x,2,id2)).
+%CM bad-patterns
+:- hb(X,Y,w(x,2,id2)), wrt(X), sv(X,Y), po(Y,w(x,2,id2)), initread(Y).
+:- hb(X,Y,w(x,2,id2)), hb(Y,X,w(x,2,id2)).
+% CM inference rules
+hb(X,"r(x,2,id1)","r(x,2,id1)") :- co(X,"r(x,2,id1)").
+hb(X,Y,"r(x,2,id1)") :- hb(Y,"r(x,2,id1)","r(x,2,id1)"), co(X,Y).
+hb(X,Y,"r(x,2,id1)") :- hb(X,Z,"r(x,2,id1)"), po(Z,"r(x,2,id1)"), wr(Y,Z)
+    , wrt(X), sv(X,Y).
+hb(X,Y,"r(x,2,id1)") :- hb(X,Z,"r(x,2,id1)"), wr(Y,Z), wrt(X), sv(X,Y).
+hb(X,Z,"r(x,2,id1)") :- hb(X,Y,"r(x,2,id1)"), hb(Y,Z,"r(x,2,id1)").
+%CM bad-patterns
+:- hb(X,Y,"r(x,2,id1)"), wrt(X), sv(X,Y), po(Y,"r(x,2,id1)"), initread(Y)
+    .
+:- hb(X,Y,"r(x,2,id1)"), hb(Y,X,"r(x,2,id1)").
+% CM inference rules
+hb(X,"r(x,1,id3)","r(x,1,id3)") :- co(X,"r(x,1,id3)").
+hb(X,Y,"r(x,1,id3)") :- hb(Y,"r(x,1,id3)","r(x,1,id3)"), co(X,Y).
+hb(X,Y,"r(x,1,id3)") :- hb(X,Z,"r(x,1,id3)"), po(Z,"r(x,1,id3)"), wr(Y,Z)
+    , wrt(X), sv(X,Y).
+20     Rachid Zennou et al.
+
+hb(X,Y,"r(x,1,id3)") :- hb(X,Z,"r(x,1,id3)"), wr(Y,Z), wrt(X), sv(X,Y).
+hb(X,Z,"r(x,1,id3)") :- hb(X,Y,"r(x,1,id3)"), hb(Y,Z,"r(x,1,id3)").
+%CM bad-patterns
+:- hb(X,Y,"r(x,1,id3)"), wrt(X), sv(X,Y), po(Y,"r(x,1,id3)"), initread(Y)
+    .
+:- hb(X,Y,"r(x,1,id3)"), hb(Y,X,"r(x,1,id3)").
+
+clingo version 5.5.0
+Reading from stdin
+Solving...
+Answer: 1
+po("w(x,1,id0)","r(x,2,id1)") po("w(x,2,id2)","r(x,1,id3)") co("w(x,1,id0
+    )","r(x,2,id1)") co("w(x,2,id2)","r(x,1,id3)") co("w(x,2,id2)","r(x
+    ,2,id1)") co("w(x,1,id0)","r(x,1,id3)") wr("w(x,2,id2)","r(x,2,id1)")
+     wr("w(x,1,id0)","r(x,1,id3)") sv("r(x,2,id1)","w(x,1,id0)") sv("w(x
+    ,2,id2)","w(x,1,id0)") sv("r(x,1,id3)","w(x,1,id0)") sv("w(x,1,id0)",
+    "r(x,2,id1)") sv("w(x,2,id2)","r(x,2,id1)") sv("r(x,1,id3)","r(x,2,
+    id1)") sv("w(x,1,id0)","w(x,2,id2)") sv("r(x,2,id1)","w(x,2,id2)") sv
+    ("r(x,1,id3)","w(x,2,id2)") sv("w(x,1,id0)","r(x,1,id3)") sv("r(x,2,
+    id1)","r(x,1,id3)") sv("w(x,2,id2)","r(x,1,id3)") initread("r(a,0,ida
+    )") wrt("w(x,1,id0)") wrt("w(x,2,id2)") rd("r(x,2,id1)") rd("r(x,1,
+    id3)") hb("w(x,2,id2)","r(x,1,id3)","r(x,1,id3)") hb("w(x,1,id0)","r(
+    x,1,id3)","r(x,1,id3)") hb("w(x,2,id2)","w(x,1,id0)","r(x,1,id3)") hb
+    ("w(x,1,id0)","r(x,2,id1)","r(x,2,id1)") hb("w(x,2,id2)","r(x,2,id1)"
+    ,"r(x,2,id1)") hb("w(x,1,id0)","w(x,2,id2)","r(x,2,id1)")
+SATISFIABLE
+
+Models       : 1
+Calls        : 1
+Time         : 0.029s
+CPU Time     : 0.000s
+
+
+ – For CM 2:
+
+% Facts
+wrt("w(x,1,id0)").
+po("w(x,1,id0)","r(x,2,id1)").
+sv("r(x,2,id1)","w(x,1,id0)").
+sv("w(x,2,id2)","w(x,1,id0)").
+sv("r(x,1,id3)","w(x,1,id0)").
+rd("r(x,2,id1)").
+sv("w(x,1,id0)","r(x,2,id1)").
+wr("w(x,2,id2)","r(x,2,id1)").
+sv("w(x,2,id2)","r(x,2,id1)").
+sv("r(x,1,id3)","r(x,2,id1)").
+wrt("w(x,2,id2)").
+sv("w(x,1,id0)","w(x,2,id2)").
+sv("r(x,2,id1)","w(x,2,id2)").
+po("w(x,2,id2)","r(x,1,id3)").
+                   Checking Causal Consistency of Distributed Databases   21
+
+sv("r(x,1,id3)","w(x,2,id2)").
+rd("r(x,1,id3)").
+wr("w(x,1,id0)","r(x,1,id3)").
+sv("w(x,1,id0)","r(x,1,id3)").
+sv("r(x,2,id1)","r(x,1,id3)").
+sv("w(x,2,id2)","r(x,1,id3)").
+initread("r(a,0,ida)").
+% CC inference rules
+co(X,Y) :- po(X,Y).
+co(X,Y) :- wr(X,Y).
+co(X,Z) :- co(X,Y), co(Y,Z). % Transitivity
+% CC bad-patterns
+:- co(X,X). % CyclicCO
+:- co(X,Y), wrt(X), initread(Y), sv(X,Y). % WriteCOInitRead
+:- co(X,Y), co(Y,Z), wr(X,Z), wrt(X), wrt(Y), rd(Z), sv(X,Y), sv(Y,Z).
+% WriteCORead
+
+% CM inference rules
+
+hb(X,"r(x,2,id1)","r(x,2,id1)") :- co(X,"r(x,2,id1)").
+hb(X,Y,"r(x,2,id1)") :- hb(Y,"r(x,2,id1)","r(x,2,id1)"), co(X,Y).
+hb(X,Y,"r(x,2,id1)") :- hb(X,Z,"r(x,2,id1)"), po(Z,"r(x,2,id1)"), wr(Y,Z)
+    , wrt(X), sv(X,Y).
+hb(X,Y,"r(x,2,id1)") :- hb(X,Z,"r(x,2,id1)"), wr(Y,Z), wrt(X), sv(X,Y).
+hb(X,Z,"r(x,2,id1)") :- hb(X,Y,"r(x,2,id1)"), hb(Y,Z,"r(x,2,id1)").
+%CM bad-patterns
+:- hb(X,Y,"r(x,2,id1)"), wrt(X), sv(X,Y), po(Y,"r(x,2,id1)"), initread(Y)
+    .
+:- hb(X,Y,"r(x,2,id1)"), hb(Y,X,"r(x,2,id1)").
+
+% CM inference rules
+hb(X,"r(x,1,id3)","r(x,1,id3)") :- co(X,"r(x,1,id3)").
+hb(X,Y,"r(x,1,id3)") :- hb(Y,"r(x,1,id3)","r(x,1,id3)"), co(X,Y).
+hb(X,Y,"r(x,1,id3)") :- hb(X,Z,"r(x,1,id3)"), po(Z,"r(x,1,id3)"), wr(Y,Z)
+    , wrt(X), sv(X,Y).
+hb(X,Y,"r(x,1,id3)") :- hb(X,Z,"r(x,1,id3)"), wr(Y,Z), wrt(X), sv(X,Y).
+hb(X,Z,"r(x,1,id3)") :- hb(X,Y,"r(x,1,id3)"), hb(Y,Z,"r(x,1,id3)").
+%CM bad-patterns
+:- hb(X,Y,"r(x,1,id3)"), wrt(X), sv(X,Y), po(Y,"r(x,1,id3)"), initread(Y)
+    .
+:- hb(X,Y,"r(x,1,id3)"), hb(Y,X,"r(x,1,id3)").
+
+clingo version 5.5.0
+Reading from stdin
+Solving...
+Answer: 1
+po("w(x,1,id0)","r(x,2,id1)") po("w(x,2,id2)","r(x,1,id3)") co("w(x,1,id0
+    )","r(x,2,id1)") co("w(x,2,id2)","r(x,1,id3)") co("w(x,2,id2)","r(x
+    ,2,id1)") co("w(x,1,id0)","r(x,1,id3)") wr("w(x,2,id2)","r(x,2,id1)")
+     wr("w(x,1,id0)","r(x,1,id3)") sv("r(x,2,id1)","w(x,1,id0)") sv("w(x
+22        Rachid Zennou et al.
+
+    ,2,id2)","w(x,1,id0)") sv("r(x,1,id3)","w(x,1,id0)") sv("w(x,1,id0)",
+    "r(x,2,id1)") sv("w(x,2,id2)","r(x,2,id1)") sv("r(x,1,id3)","r(x,2,
+    id1)") sv("w(x,1,id0)","w(x,2,id2)") sv("r(x,2,id1)","w(x,2,id2)") sv
+    ("r(x,1,id3)","w(x,2,id2)") sv("w(x,1,id0)","r(x,1,id3)") sv("r(x,2,
+    id1)","r(x,1,id3)") sv("w(x,2,id2)","r(x,1,id3)") initread("r(a,0,ida
+    )") wrt("w(x,1,id0)") wrt("w(x,2,id2)") rd("r(x,2,id1)") rd("r(x,1,
+    id3)") hb("w(x,2,id2)","r(x,1,id3)","r(x,1,id3)") hb("w(x,1,id0)","r(
+    x,1,id3)","r(x,1,id3)") hb("w(x,2,id2)","w(x,1,id0)","r(x,1,id3)") hb
+    ("w(x,1,id0)","r(x,2,id1)","r(x,2,id1)") hb("w(x,2,id2)","r(x,2,id1)"
+    ,"r(x,2,id1)") hb("w(x,1,id0)","w(x,2,id2)","r(x,2,id1)")
+SATISFIABLE
+
+Models           : 1
+Calls            : 1
+Time             : 0.011s
+CPU Time         : 0.000s
+
+    As we have mentioned before, our new approach (CM 2) computes the hb𝑜
+relation for a small set of operations (po-maximal operations) compared to CM -
+1. As can be seen above, the size of the Datalog program was considerably
+reduced when we use CM 2 for a small history. Let alone long histories that
+contains hundreds of operations. This will be seen in the experimental results
+(Section 6).
+
+
+5.4     A procedure for checking Causal Consistency
+
+Let’s name the procedure which implements the reduction we have seen in the
+previous section REDUC-to-DATALOG. This procedure takes as input the his-
+tory ℎ and the causal consistency model ℳ to check, and returns the correspond-
+ing Datalog program 𝒟. Then, we call another procedure named DATALOG-
+SOLVER which verifies whether 𝒟 is SATISFIABLE or not.
+
+
+      Input: A history ℎ = ⟨𝑂, po, wr⟩ and a causal consistency model M
+      Output: SAT iff ℎ satisfies M
+ 1 REDUC-to-DATALOG(h,M)
+ 2 if DATALOG-SOLVER(REDUC-to-DATALOG(h,M)) then
+ 3     return true ;
+ 4 else
+ 5     return false ;
+ 6 end
+
+                Algorithm 1: Checking Causal Consistency.
+
+
+
+Theorem 3. Algorithm 1 returns true iff the input history ℎ satisfies the causal
+consistency model M.
+                     Checking Causal Consistency of Distributed Databases       23
+
+The correctness of this theorem is ensured by the fact that our reduction is a
+simple and direct encoding of bad patterns to Datalog and these bad-patterns
+were proven in [9] to capture exactly the causal consistency violations.
+
+5.5   Complexity
+The complexity of a Datalog program is 𝒪(𝑛𝑘 ) [29], where n is the number of
+constants in the input data, and k is the maximum number of variables in a
+clause. As we have seen in the previous section, given a history ⟨𝑂, po, wr⟩, the
+maximum number of variables in a rule in our Datalog programs is 3, thus the
+complexity of our approach is 𝒪(𝑛3 ), where n is the size of the computation (the
+number of operations). Our approach’s complexity is better than the one defined
+in [9] in which the complexity of checking CC, CCv and CM was shown to be
+𝒪(𝑛5 ).
+
+6     Experimental Evaluation
+We have investigated the efficiency and scalability of our tool (named CausalC-
+Checker ) by applying it to two real-life distributed transactional databases,
+CockroachDB [1] and Galera [2].
+
+
+
+
+Fig. 3: The General architecture of the histories checking procedure
+
+    Histories generation: The Figure 3 presents the general architecture of
+the used testing procedure in the next experiments. Histories are generated us-
+ing random clients with the parameters, the number of sessions, the number of
+transactions per session, the number of events per transaction (in this paper,
+we consider one event per transaction), and the number of variables. A client is
+generated by the generator of histories (Algorithm 2) by choosing randomly the
+type of operation (read or write) in each transaction, the variable and a value for
+write operations. That constitutes non executed histories that are the histories
+which do not contain the return values of read operations. Each client performs a
+session, communicates with the database cluster by executing operations (read-
+/write) and gets the return values for read operations. The recorded histories
+are called executed histories in the Figure 3. We ensure that all histories are
+differentiated. These histories are the input of our CausalC-Checker.
+
+6.1   Case study 1: CockroachDB.
+We have used the highly available and strongly consistent distributed database
+CockroachDB [1] (v2.1.0) that is built on a transactional strongly-consistent key-
+value store, so it is expected to be causally consistent. Considering one operation
+24       Rachid Zennou et al.
+
+
+     Input: nClient, nTransaction, nEvent, nVariable
+     Output: A non executed history
+ 1 𝑙𝑎𝑠𝑡𝑊 𝑟𝑖𝑡𝑒 ← ∅;
+ 2 foreach 𝑣 ∈ 1..nVariable do
+ 3     𝑙𝑎𝑠𝑡𝑊 𝑟𝑖𝑡𝑒(𝑣) ← 0;
+ 4 end
+ 5 history ← ∅;
+ 6 foreach 1..nClient do
+ 7     Client ← ∅;
+ 8     foreach 1..nTransaction do
+ 9         Transaction ← ∅;
+10         foreach 1..nEvent do
+11              Event ← 𝑛𝑒𝑤(Event);
+12              Event.𝑜𝑝𝑒𝑟𝑎𝑡𝑖𝑜𝑛 ← 𝑢𝑛𝑖𝑓 𝑜𝑟𝑚𝑙𝑦 𝑐ℎ𝑜𝑜𝑠𝑒({Read, Write});
+13              Event.𝑣𝑎𝑟𝑖𝑎𝑏𝑙𝑒 ← 𝑢𝑛𝑖𝑓 𝑜𝑟𝑚𝑙𝑦 𝑐ℎ𝑜𝑜𝑠𝑒({1..nVariable});
+14              if Event.𝑜𝑝𝑒𝑟𝑎𝑡𝑖𝑜𝑛 = Write then
+15                  Event.𝑣𝑎𝑙𝑢𝑒 ← 𝑙𝑎𝑠𝑡𝑊 𝑟𝑖𝑡𝑒(Event.𝑣𝑎𝑟𝑖𝑎𝑏𝑙𝑒) + 1;
+16                  𝑙𝑎𝑠𝑡𝑊 𝑟𝑖𝑡𝑒(Event.𝑣𝑎𝑟𝑖𝑎𝑏𝑙𝑒) ← 𝑙𝑎𝑠𝑡𝑊 𝑟𝑖𝑡𝑒(Event.𝑣𝑎𝑟𝑖𝑎𝑏𝑙𝑒) + 1;
+17              end
+18              Transaction.𝑝𝑢𝑠ℎ(Event);
+19         end
+20         Client.𝑝𝑢𝑠ℎ(Transaction);
+21     end
+22     history.𝑝𝑢𝑠ℎ(Client);
+23 end
+24 return history;
+
+             Algorithm 2: The histories generator algorithm
+per transaction lead to our model.
+ We have examined the effect of the number of operations on runtime for a fixed
+number of processes (4 processes) and the effect of the number of processes.
+We have tested 200 histories for each configuration and calculated the average
+runtime.
+    We have checked CC, CCv and CM, using its two definitions CM 1 and CM 2,
+for all generated histories. Figure 4 shows the results. The graphs 4a, 4c, 4e and
+4g show the runtime while increasing the number of operations from 100 to 600,
+in augmentations of 100 (with a fixed number of processes, 4 processes). The
+graphs 4b , 4d, 4f and 4h report the runtime when increasing the number of
+processes from 2 to 6, in augmentations of 1. For each number of processes 𝑥 we
+have considered 50𝑥 operations, so increasing the number of processes increases
+the number of operations in the history as well.
+    The graph 4a resp., 4b shows a comparaison between CC, CCv, CM 1 and
+CM 2 verification runtimes while varying the number of operations resp., the
+number of processes. The graph 4c resp., 4d, presents the running time of CM 2
+verification compared to CC and CCv verification running time. The graph 4e
+resp., graph 4g , shows the evolution of CC and CCv verification resp., CM 1
+and CM 2 verification, runtime while increasing the number of operations. The
+                     Checking Causal Consistency of Distributed Databases        25
+
+
+
+
+(a) Checking Causal Consistency while   (b) Checking Causal Consistency while
+varying the number of operations.       varying the number of processes.
+
+
+
+
+(c) Checking CC, CCv and CM 2 while     (d) Checking CC, CCv and CM 2 while
+varying the number of operations.       varying the number of processes.
+
+
+
+
+(e) Checking CC and CCv while varying   (f) Checking CC and CCv while varying
+the number of operations.               the number of processes.
+
+
+
+
+(g) Comparing CM 1 and CM 2 run-        (h) Comparing CM 1 and CM 2 run-
+times while varying the number of op-   times while varying the number of pro-
+erations.                               cesses.
+
+Fig. 4: Checking Causal Consistency for CockreachDB histories.
+26      Rachid Zennou et al.
+
+graph 4f resp., graph 4h, shows the evolution of CC and CCv verification resp.,
+CM 1 and CM 2 verification, runtime while increasing the number of processes.
+    Our approach is more efficient in the case of CC and CCv verification compared
+to the CM 1 case (graphs 4a and 4b). The figure 4c resp., 4d, is a zoom on CC,
+CCv and CM 2 of figure 4a resp., 4b. It shows that the CM 2 improves the running
+time but costs more compared to CC and CCv as well. The figure 4e resp., 4f, is a
+zoom on CC and CCv of figure 4a resp., 4b. It shows that CC and CCv verification
+are very efficient and terminates in less than 11.6 seconds for all histories we have
+tested. As we have noticed above, the results shown in 4g and 4h show that
+CM 2 has better performance, by factors of 8 times in the case of 600 operations.
+As expected, all the tested histories were valid w.r.t. all the considered causal
+consistency models.
+
+
+6.2   Case study 2: Galera.
+
+
+
+
+(a) Checking Causal Consistency while    (b) Checking CC, CCv and CM 2 while
+varying the number of operations.        varying the number of operations.
+
+
+
+
+(c) Checking CC and CCv while varying    (d) Comparing CM 2 and CC violations
+the number of operations.                runtimes while varying the number of
+                                         operations.
+
+Fig. 5: Checking Causal Consistency for Galera histories.
+
+   We have also used the cluster called Galera [2] (v3.20). Galera Cluster is a
+database cluster based on synchronous replication and Oracle’s InnoDB/MySQL.
+                      Checking Causal Consistency of Distributed Databases          27
+
+It is expected to implement Snapshot isolation when transactions are processed
+in separated nodes.
+Similarly to the first case study, we have studied the evolution of runtime while
+increasing the number of operations from 100 to 600, in augmentations of 100.
+We have verified 200 histories for each number of operations and compute the
+runtime average.
+    The graphs in Figure 5 show the impact of increasing the number of opera-
+tions on runtime while fixing the number of processes (4 processes). The graph
+5a shows the comparaison of CC, CCv, CM 1 and CM 2 verification runtimes. The
+graph 5b presents a zoom on graph 5a in order to compare CM 2 to CC and CCv.
+The graph 5c reports the evolution of CC and CCv verification runtime. Finally,
+the graph 5d presents a comparison between CC and CM 2 running times.
+    Similarly to the CockroachDB case study, our approach is more efficient in
+the case of CC and CCv either while increasing the number of operations or
+processes. The graph 5a shows that our new definition CM 2 outperforms CM 1,
+but still less efficient compared to CC and CCv (graph 5b).
+    Our approach allows capturing violations on the Galera database. We have
+found that 1.25% of the tested Galera histories violate causal consistency, that
+confirms the bugs submitted on Github[3]. We mention that 73.3% of the de-
+tected CM violations are also CC violations. The suggested approach scales well
+and detects violations on the used version of Galera DB.
+    The experiments show that our approach is efficient for both verification of
+valid computations and detection of violations, especially in the case of CC and
+CCv. The gap between CC (CCv) and CM 1 runtimes reported in the graphs 4a, 4b
+and 5a is due to the fact that in CM 1 we compute the hb𝑜 relation and check
+the bad-patterns for each operation. This gap is reduced using the new definition
+CM 2 (graphs 4a, 4b and 5a) in which we compute the hb𝑜 relation and check
+the bad-patterns for only the last operation of each thread.
+
+
+7    Related Work
+
+Several works have considered the problem of checking strong consistency models
+such as Linearizability and Sequential consistency (SC) [4, 5, 11, 14, 16, 17, 27, 30].
+Our recent works [33, 31] address the problem of verifying SC and TSO (Total
+store ordering) gradually by using several variants of causal consistency (and
+other weak consistency models) including the ones we have considered in this
+work. However, few have addressed the problem of checking weak consistency
+models. Emmi and Enea [15] propose an algorithm to optimize the consistency
+checking based on the notion of minimal-visibility. However, their work relies
+on some specific relaxations in those criteria, leading to the naive enumeration
+in the context of strong consistency models such as SC and TSO. Bouajjani et
+al. [10] presents a formalization of eventual consistency for replicated objects
+and reduces the problem of checking eventual consistency to reachability and
+model checking problems.
+Bouajjani et al. [9] considers the problem of checking causal consistency. They
+28      Rachid Zennou et al.
+
+present the formalization of the different variations of causal consistency(CC, CCv
+and CM) we use in this work and a complete characterization of the violations
+of those models. In addition, they show that checking if an execution satisfies
+one of those models is polynomial time (𝒪(𝑛5 )). However, this work does not
+propose any implementation. Our work presents an implementation based on a
+reduction to Datalog queries solving which improves the complexity from 𝒪(𝑛5 )
+to 𝒪(𝑛3 ).
+
+
+8    Conclusion
+
+We have presented a tool for checking automatically that given computations
+of a system are causally consistent. Our procedure for solving this conformance
+problem is based on implementing the theoretical approach introduced in [9]
+where causal consistency violations are characterized in terms of the occurrence
+of some particular bad-patterns. We build on this work by reducing the prob-
+lem of detecting the existence of these patterns in computations to the problem
+of solving Datalog queries. We have applied our algorithm to two real-life case
+studies. The experimental results show that in the case of CC and CCv our ap-
+proach is efficient and scalable. In the CM case, the cost grows polynomially but
+much faster than in the case of CC and CCv. In order to improve the CM checking
+performance, an optimized definition (CM 2) of the original definition [9] has
+been proposed. Our experimental results show that this new definition reduce
+considerably the cost of CM verification It reduces the CM verification runtime by
+more than 7 times (for histories with 600 operations). However, this optimized
+CM definition still less efficient compared to CC and CCv. Nevertheless, it turned
+out that interestingly, most of the CM violations (73.3%) that we found are in
+fact CC violations, and therefore can be caught using a more efficient procedure
+in which one can start by verifying CC first.
+
+
+References
+
+ 1. https://www.cockroachlabs.com, [Retrieved 15/11/2018]
+ 2. http://galeracluster.com, [Retrieved 15/11/2018]
+ 3. https://github.com/codership/galera/issues/336, [Retrieved 15/11/2018]
+ 4. Abdulla, P.A., Atig, M.F., Jonsson, B., Lång, M., Ngo, T.P., Sagonas,
+    K.: Optimal stateless model checking for reads-from equivalence under se-
+    quential consistency. Proc. ACM Program. Lang. 3(OOPSLA) (Oct 2019).
+    https://doi.org/10.1145/3360576, https://doi.org/10.1145/3360576
+ 5. Abdulla, P.A., Haziza, F., Holı́k, L.: Parameterized verification through view ab-
+    straction. STTT 18(5), 495–516 (2016). https://doi.org/10.1007/s10009-015-0406-
+    x, https://doi.org/10.1007/s10009-015-0406-x
+ 6. Abiteboul, S., Hull, R., Vianu, V. (eds.): Foundations of Databases: The Logical
+    Level. Addison-Wesley Longman Publishing Co., Inc., Boston, MA, USA, 1st edn.
+    (1995)
+                      Checking Causal Consistency of Distributed Databases          29
+
+ 7. Ahamad, M., Neiger, G., Burns, J.E., Kohli, P., Hutto, P.W.: Causal mem-
+    ory: Definitions, implementation, and programming. Distrib. Comput. 9(1), 37–
+    49 (Mar 1995). https://doi.org/10.1007/BF01784241, https://doi.org/10.1007/
+    BF01784241
+ 8. Bailis, P., Ghodsi, A., Hellerstein, J.M., Stoica, I.: Bolt-on causal consistency.
+    In: Proceedings of the 2013 ACM SIGMOD International Conference on Man-
+    agement of Data. pp. 761–772. SIGMOD ’13, ACM, New York, NY, USA
+    (2013). https://doi.org/10.1145/2463676.2465279, http://doi.acm.org/10.1145/
+    2463676.2465279
+ 9. Bouajjani, A., Enea, C., Guerraoui, R., Hamza, J.: On verifying causal consistency.
+    In: Castagna, G., Gordon, A.D. (eds.) Proceedings of the 44th ACM SIGPLAN
+    Symposium on Principles of Programming Languages, POPL 2017, Paris, France,
+    January 18-20, 2017. pp. 626–638. ACM (2017), http://dl.acm.org/citation.
+    cfm?id=3009888
+10. Bouajjani, A., Enea, C., Hamza, J.: Verifying eventual consistency of optimistic
+    replication systems. In: Proceedings of the 41st ACM SIGPLAN-SIGACT Sympo-
+    sium on Principles of Programming Languages. pp. 285–296. POPL ’14, ACM,
+    New York, NY, USA (2014). https://doi.org/10.1145/2535838.2535877, http:
+    //doi.acm.org/10.1145/2535838.2535877
+11. Burckhardt, S., Dern, C., Musuvathi, M., Tan, R.: Line-up: a complete and au-
+    tomatic linearizability checker. In: Zorn, B.G., Aiken, A. (eds.) Proceedings of
+    the 2010 ACM SIGPLAN Conference on Programming Language Design and Im-
+    plementation, PLDI 2010, Toronto, Ontario, Canada, June 5-10, 2010. pp. 330–
+    340. ACM (2010). https://doi.org/10.1145/1806596.1806634, https://doi.org/
+    10.1145/1806596.1806634
+12. Du, J., Elnikety, S., Roy, A., Zwaenepoel, W.: Orbe: Scalable causal consistency
+    using dependency matrices and physical clocks. In: Proceedings of the 4th Annual
+    Symposium on Cloud Computing. pp. 11:1–11:14. SOCC ’13, ACM, New York, NY,
+    USA (2013). https://doi.org/10.1145/2523616.2523628, http://doi.acm.org/10.
+    1145/2523616.2523628
+13. Du, J., Iorgulescu, C., Roy, A., Zwaenepoel, W.: Gentlerain: Cheap
+    and scalable causal consistency with physical clocks. Proceedings of the
+    5th ACM Symposium on Cloud Computing, SOCC 2014 (11 2014).
+    https://doi.org/10.1145/2670979.2670983
+14. Eirı́ksson, Á.T., McMillan, K.L.: Using formal verification/analysis methods on
+    the critical path in system design: A case study. In: Wolper, P. (ed.) Com-
+    puter Aided Verification, 7th International Conference, Liège, Belgium, July, 3-
+    5, 1995, Proceedings. Lecture Notes in Computer Science, vol. 939, pp. 367–
+    380. Springer (1995). https://doi.org/10.1007/3-540-60045-0 63, https://doi.
+    org/10.1007/3-540-60045-0\_63
+15. Emmi, M., Enea, C.: Monitoring weak consistency. In: Chockler, H., Weissenbacher,
+    G. (eds.) Computer Aided Verification - 30th International Conference, CAV 2018,
+    Held as Part of the Federated Logic Conference, FloC 2018, Oxford, UK, July 14-
+    17, 2018, Proceedings, Part I. Lecture Notes in Computer Science, vol. 10981, pp.
+    487–506. Springer (2018). https://doi.org/10.1007/978-3-319-96145-3 26, https:
+    //doi.org/10.1007/978-3-319-96145-3\_26
+16. Emmi, M., Enea, C.: Sound, complete, and tractable linearizability mon-
+    itoring for concurrent collections. PACMPL 2(POPL), 25:1–25:27 (2018).
+    https://doi.org/10.1145/3158113, https://doi.org/10.1145/3158113
+30      Rachid Zennou et al.
+
+17. Emmi, M., Enea, C., Hamza, J.: Monitoring refinement via symbolic rea-
+    soning. In: Grove, D., Blackburn, S. (eds.) Proceedings of the 36th ACM
+    SIGPLAN Conference on Programming Language Design and Implementa-
+    tion, Portland, OR, USA, June 15-17, 2015. pp. 260–269. ACM (2015).
+    https://doi.org/10.1145/2737924.2737983, https://doi.org/10.1145/2737924.
+    2737983
+18. Gilbert, S., Lynch, N.: Brewer’s conjecture and the feasibility of consis-
+    tent, available, partition-tolerant web services. SIGACT News 33(2), 51–
+    59 (Jun 2002). https://doi.org/10.1145/564585.564601, http://doi.acm.org/10.
+    1145/564585.564601
+19. Herlihy, M.P., Wing, J.M.: Linearizability: A correctness condition for
+    concurrent objects. ACM Trans. Program. Lang. Syst. 12(3), 463–492
+    (Jul 1990). https://doi.org/10.1145/78969.78972, http://doi.acm.org/10.1145/
+    78969.78972
+20. Lamport, L.: How to make a multiprocessor computer that correctly exe-
+    cutes multiprocess programs. IEEE Trans. Comput. 28(9), 690–691 (Sep 1979).
+    https://doi.org/10.1109/TC.1979.1675439, https://doi.org/10.1109/TC.1979.
+    1675439
+21. Lamport, L.: Time, clocks, and the ordering of events in a distributed system. Com-
+    mun. ACM 21(7), 558–565 (Jul 1978). https://doi.org/10.1145/359545.359563,
+    http://doi.acm.org/10.1145/359545.359563
+22. Lloyd, W., Freedman, M.J., Kaminsky, M., Andersen, D.G.: Don’t settle
+    for eventual: Scalable causal consistency for wide-area storage with cops.
+    In: Proceedings of the Twenty-Third ACM Symposium on Operating Sys-
+    tems Principles. pp. 401–416. SOSP ’11, ACM, New York, NY, USA
+    (2011). https://doi.org/10.1145/2043556.2043593, http://doi.acm.org/10.1145/
+    2043556.2043593
+23. Mahajan, P., Alvisi, L., Dahlin, M.: Consistency, availability, convergence. Tech.
+    rep. (2011)
+24. Perrin, M., Mostefaoui, A., Jard, C.: Causal consistency: Beyond memory. In: Pro-
+    ceedings of the 21st ACM SIGPLAN Symposium on Principles and Practice of
+    Parallel Programming. pp. 26:1–26:12. PPoPP ’16, ACM, New York, NY, USA
+    (2016)
+25. Petersen, K., Spreitzer, M.J., Terry, D.B., Theimer, M.M., Demers, A.J.: Flexible
+    update propagation for weakly consistent replication. SIGOPS Oper. Syst. Rev.
+    31(5), 288–301 (Oct 1997). https://doi.org/10.1145/269005.266711, http://doi.
+    acm.org/10.1145/269005.266711
+26. Preguiça, N., Zawirski, M., Bieniusa, A., Duarte, S., Balegas, V., Baquero, C.,
+    Shapiro, M.: Swiftcloud: Fault-tolerant geo-replication integrated all the way to the
+    client machine. In: Proceedings of the 2014 IEEE 33rd International Symposium on
+    Reliable Distributed Systems Workshops. pp. 30–33. SRDSW ’14, IEEE Computer
+    Society, Washington, DC, USA (2014). https://doi.org/10.1109/SRDSW.2014.33,
+    https://doi.org/10.1109/SRDSW.2014.33
+27. Qadeer, S.: Verifying sequential consistency on shared-memory multiproces-
+    sors by model checking. IEEE Trans. Parallel Distrib. Syst. 14(8), 730–741
+    (2003). https://doi.org/10.1109/TPDS.2003.1225053, https://doi.org/10.1109/
+    TPDS.2003.1225053
+28. Vardi, M.Y.: The complexity of relational query languages (extended ab-
+    stract). In: Proceedings of the Fourteenth Annual ACM Symposium on The-
+    ory of Computing. pp. 137–146. STOC ’82, ACM, New York, NY, USA
+                       Checking Causal Consistency of Distributed Databases          31
+
+    (1982). https://doi.org/10.1145/800070.802186, http://doi.acm.org/10.1145/
+    800070.802186
+29. Warren, D.S.: Programming in tabled prolog. In: Symposium Program. p. 62 (1999)
+30. Wing, J.M., Gong, C.: Testing and verifying concurrent objects. J. Parallel Distrib.
+    Comput. 17(1-2), 164–182 (1993). https://doi.org/10.1006/jpdc.1993.1015, https:
+    //doi.org/10.1006/jpdc.1993.1015
+31. Zennou, R., Atig, M.F., Biswas, R., Bouajjani, A., Enea, C., Erradi, M.: Boost-
+    ing sequential consistency checking using saturation. In: Hung, D.V., Sokol-
+    sky, O. (eds.) Automated Technology for Verification and Analysis. pp. 360–
+    376. Springer International Publishing, Cham (2020), https://doi.org/10.1007/
+    978-3-030-59152-6_20
+32. Zennou, R., Biswas, R., Bouajjani, A., Enea, C., Erradi, M.: Checking causal con-
+    sistency of distributed databases. In: Atig, M.F., Schwarzmann, A.A. (eds.) Net-
+    worked Systems. pp. 35–51. Springer International Publishing, Cham (2019)
+33. Zennou, R., Bouajjani, A., Enea, C., Erradi, M.: Gradual consistency checking. In:
+    Dillig, I., Tasiran, S. (eds.) Computer Aided Verification. pp. 267–285. Springer
+    International Publishing, Cham (2019)
+

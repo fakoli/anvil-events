@@ -1,0 +1,43 @@
+@article{roohitavaf2019logplayer,
+  title     = {LogPlayer: Fault-tolerant Exactly-once Delivery using gRPC Asynchronous Streaming},
+  author    = {Roohitavaf, Mohammad and Ren, Kun and Zhang, Guogen and Ben-Romdhane, Sami},
+  year      = {2019},
+  eprint    = {1911.11286},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.DC},
+  url       = {https://arxiv.org/abs/1911.11286},
+  note      = {eBay/Netskope; TLA+-verified in-order exactly-once WAL replay; basis for anvil-events outbox recovery protocol}
+}
+
+@article{trofimov2019delivery,
+  title     = {Delivery, consistency, and determinism: rethinking guarantees in distributed stream processing},
+  author    = {Trofimov, Artem and Kuralenok, Igor E. and Marshalkin, Nikita and Novikov, Boris},
+  year      = {2019},
+  eprint    = {1907.06250},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.DB},
+  url       = {https://arxiv.org/abs/1907.06250},
+  note      = {JetBrains Research/Yandex/VK/HSE; three-axis guarantee framework; basis for anvil-events guarantees-by-axis contract}
+}
+
+@article{borrill2026lamport,
+  title     = {Lamport's Arrow of Time: The Category Mistake in Logical Clocks},
+  author    = {Borrill, Paul},
+  year      = {2026},
+  eprint    = {2602.21730},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.DC},
+  url       = {https://arxiv.org/abs/2602.21730},
+  note      = {epistemic vs ontic ordering critique; justifies anvil-events per-producer, no-global-sequencer stance}
+}
+
+@article{zennou2021causal,
+  title     = {Checking Causal Consistency of Distributed Databases},
+  author    = {Zennou, Rachid and Biswas, Ranadeep and Bouajjani, Ahmed and Enea, Constantin and Erradi, Mohammed},
+  year      = {2021},
+  eprint    = {2011.09753},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.DB},
+  url       = {https://arxiv.org/abs/2011.09753},
+  note      = {causal consistency = acyclic causality graph, checkable automatically; basis for anvil-events verify command}
+}

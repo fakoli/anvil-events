@@ -1,0 +1,762 @@
+                                                                                  Lamport’s Arrow of Time:
+                                                      The Category Mistake in Logical Clocks
+                                                                                              Paul Borrill, DÆDÆLUS
+                                                                                                    02026-FEB-25
+
+
+
+                                            Lamport’s 1978 paper introduced the happens-before relation and logical
+                                            clocks, freeing distributed systems from dependence on synchronized
+
+
+
+
+arXiv:2602.21730v1 [cs.DC] 25 Feb 2026
+                                            physical clocks. This is widely understood as a move away from Newtonian
+                                            absolute time. We argue that Lamport’s formalism retains a deeper and
+                                            largely unexamined assumption: that causality induces a globally well-
+                                            defined directed acyclic graph (DAG) over events—a forward-in-time-
+                                            only ( F I T O ) structure that functions as an arrow of time embedded at
+                                            the semantic level. Following Ryle’s analysis of category mistakes, we
+                                            show that this assumption conflates an epistemic construct (the logical
+                                            ordering of messages) with an ontic claim (that physical causality is globally
+                                            acyclic and monotonic). We trace this conflation through Shannon’s
+                                            channel model, TLA+ , Bell’s theorem, and the impossibility results of
+                                            Fischer–Lynch–Paterson and Brewer’s CAP theorem. We then show that
+                                            special and general relativity permit only local causal structure, and that
+                                            recent work on indefinite causal order demonstrates that nature admits
+                                            correlations with no well-defined causal ordering. We propose that mutual
+                                            information conservation, rather than temporal precedence, provides a
+                                            more fundamental primitive for distributed consistency.
+
+
+                                         Introduction
+
+                                         In 1978, Leslie Lamport published what would become one of the most
+                                         cited papers in computer science [1].1 Its central contribution was to de-            1
+                                                                                                                                 Lamport’s paper has over 14,000 cita-
+                                                                                                                               tions. It is the conceptual ancestor of
+                                         tach the notion of correctness in a distributed system from synchronized
+                                                                                                                               virtually every consistency protocol in use
+                                         physical clocks. Instead, Lamport defined a partial order over events—the             today, from PA X O S to Raft to vector clocks.
+                                         happens-before relation →—and showed that a monotonic timestamp
+                                         function C could be constructed such that
+
+                                                                        a→b        =⇒   C (a) < C (b).                   (1)
+
+                                         The move is widely understood as having freed distributed systems theory
+                                         from Newtonian absolute time. We argue that it did not go far enough.
+                                            While Lamport eliminated the need for a shared clock, he retained a
+                                         stronger assumption: that the causal relationships among all events in a
+                                         distributed system form a globally well-defined directed acyclic graph.2              2
+                                                                                                                                The DAG assumption is so deeply
+                                                                                                                               embedded that most distributed systems
+                                         This assumption encodes what we call the Forward-In-Time-Only ( F I T O )
+                                                                                                                               textbooks do not state it as an assumption
+                                         principle—the commitment that causation is irreversible, acyclic, and                 at all—it is treated as self-evident.
+                                         globally monotonic. F I T O functions as an implicit arrow of time, embedded
+                                         not in the physics of the system but in the semantics of the model.
+
+
+                                         L A M P O RT ’ S A R R O W O F T I M E                          1 of 13
+   The purpose of this paper is to make this assumption explicit, to show
+that it constitutes a category mistake in the sense of Ryle [2], and to
+demonstrate that it is incompatible with the causal structure permitted
+by both relativity and quantum mechanics. We further argue that the
+foundational impossibility results of distributed computing—FLP [3], the
+Two Generals problem, and CAP [4; 5]—are consequences of the F I T O
+assumption rather than fundamental physical constraints, and that an
+information-theoretic primitive based on mutual information conservation
+offers a path beyond them.
+
+
+Lamport’s Construction and Its Implicit Commitments
+
+Lamport defines the happens-before relation → over events in a dis-
+tributed system via three rules:
+        1. If a and b are events in the same process and a comes before b in
+           program order, then a → b.
+
+        2. If a is the sending of a message and b is the receipt of that mes-
+           sage, then a → b.
+
+        3. Transitivity: if a → b and b → c, then a → c.
+The resulting structure is a strict partial order—equivalently, a directed
+acyclic graph. Logical clocks embed this partial order into the natural
+numbers; vector clocks [6; 7] refine the embedding to capture the full
+partial order rather than merely a consistent extension of it.3                  3
+                                                                                  Fidge and Mattern independently
+                                                                                 invented vector clocks in 1988–89. Unlike
+   These constructions carry three implicit commitments that exceed the
+                                                                                 Lamport clocks, vector clocks satisfy a
+mere absence of a synchronized clock:                                            biconditional: a → b ⇐⇒ V (a) < V (b).
+                                                                                 But both still presuppose a DAG.
+Definition 0.1 (Forward-In-Time-Only ( F I T O )). A distributed systems model
+satisfies F I T O if it assumes:
+1. Temporal monotonicity: every causal chain is mapped to a strictly
+   increasing sequence in some well-ordered set.
+
+2. Asymmetric causation: if event a can influence event b, then b cannot
+   influence a; the causal graph contains no directed cycles.
+
+3. Global causal reference: the partial order → is observer-independent;
+   all participants agree on which events are causally related and in which
+   direction.
+    4                                                                            4
+                                                                                  Compare with special relativity: two
+                                                                                 observers in different inertial frames do
+   Lamport’s Rule (2)—that sending precedes receiving—is the locus
+                                                                                 not agree on the temporal ordering of
+of the F I T O assumption. It encodes the claim that information flow is         spacelike-separated events. Lamport’s
+unidirectional: the sender’s state can influence the receiver’s, but not         third axiom is therefore stronger than
+                                                                                 what relativity permits.
+conversely. As we shall see, this mirrors Shannon’s channel model [8] and,
+at a deeper level, the assumption that physical causality admits a single,
+globally consistent arrow.
+
+
+L A M P O RT ’ S A R R O W O F T I M E                     2 of 13
+The Category Mistake
+
+Gilbert Ryle introduced the concept of a category mistake to describe the
+error of presenting a fact or entity as if it belonged to a logical category
+other than its own [2].5                                                                    5
+                                                                                              Ryle’s famous example: a visitor to
+                                                                                            Oxford, having been shown the colleges,
+   We claim that Lamport’s happens-before relation involves an analogous
+                                                                                            libraries, and playing fields, asks “But
+error. The relation → is defined over message paths—potential channels                      where is the University?”—confusing an
+of influence between events. It is an epistemic construct: it records what                  institutional abstraction with a physical
+                                                                                            location.
+one event could have known about another, given the communication
+topology. But the embedding into a DAG, and the subsequent use of
+logical timestamps as a correctness criterion, treats this epistemic ordering
+as if it were ontic—as if it captured the physical causal structure of the
+system.
+   Spekkens [9] has demonstrated that many apparently quantum phe-
+nomena arise from exactly this type of conflation: treating an epistemic
+state (knowledge about a system) as if it were an ontic state (the system’s
+physical reality).6 His toy model shows that the distinction between what                   6
+                                                                                              Spekkens’ toy model reproduces super-
+                                                                                            position, entanglement, and no-cloning
+we know and what is matters profoundly—a lesson distributed systems
+                                                                                            from a classical system with a knowledge-
+has yet to absorb.                                                                          balance principle. The “mysteries” disap-
+   The same pattern recurs across the foundations of distributed comput-                    pear once the epistemic–ontic distinction
+                                                                                            is respected.
+ing:
+
+
+
+Domain                           Epistemic (correct)               Ontic (mistake)
+
+Quantum mechanics                ψ = knowledge of state            ψ = physical reality
+Information theory               message = representation          message = physical entity
+Distributed systems              → = potential message path        → = physical causation
+Concurrency                      linearization = proof artifact    linearization = physical instant
+
+
+F I T O in Shannon’s Channel Model
+
+Shannon’s mathematical theory of communication [8] defines a channel
+as a unidirectional pipeline:7                                                              7
+                                                                                              Shannon’s paper is arguably the founding
+                                                                                            document of the information age. But
+                                                                                            its directional channel model—Source
+   Source −→ Encoder −→ Channel −→ Decoder −→ Destination.
+                                                                                            → Encoder → Channel → Decoder →
+                                                                                            Destination—was a modeling choice, not a
+Information flows from source to destination. The receiver is passive; the                  mathematical necessity.
+additive noise model Y = X + N treats the channel as a forward-only
+corruption process.
+   Yet the mathematics of information is symmetric. Mutual information
+satisfies
+                          I (X; Y ) = I (Y ; X ),                      (2)
+
+regardless of which variable is “sent” and which is “received.”8 The                        8
+                                                                                              This symmetry is a theorem of proba-
+                                                                                            bility theory, not an assumption. It holds
+asymmetry in Shannon’s model is not a consequence of information
+                                                                                            regardless of any temporal or causal
+                                                                                            interpretation placed on X and Y .
+
+L A M P O RT ’ S A R R O W O F T I M E                            3 of 13
+theory; it is a consequence of the temporal structure imposed on the
+model—the assumption that the source acts before the destination.
+   Wheeler and Feynman [10] showed that the classical equations of elec-
+tromagnetism are time-symmetric: both retarded (forward) and advanced
+(backward) solutions exist. The apparent arrow—the dominance of re-
+tarded radiation—emerges from boundary conditions (the absorber), not
+from the equations themselves. Cramer’s transactional interpretation [11]
+extends this insight to quantum mechanics.9                                       9
+                                                                                    Cramer’s transactional interpretation
+                                                                                  models quantum events as a “handshake”
+   Lamport’s Rule (2) inherits Shannon’s F I T O assumption directly: sending
+                                                                                  between a retarded offer wave and
+precedes receiving, and no mechanism exists for the receiver’s state to           an advanced confirmation wave. The
+constrain the sender’s. The happens-before relation is Shannon’s channel,         transaction is bilateral and atemporal—
+                                                                                  neither wave is privileged as cause or
+repackaged as a partial order.                                                    effect.
+
+
+F I T O in TLA+ : The Formal Codification
+
+Lamport’s 1978 paper introduced the arrow informally. His TLA + [12]—
+the Temporal Logic of Actions—formalized it.10 TLA + is built on linear           10
+                                                                                    TLA + is both a specification language
+                                                                                  and a proof system. It is used at Amazon
+temporal logic [13] and encodes F I T O at every level of its semantics.
+                                                                                  (AWS), Microsoft, and Intel to verify
+                                                                                  distributed protocols. Its adoption makes
+                                                                                  the F I T O assumption operationally
+Unprimed/Primed: F I T O in the Syntax
+                                                                                  consequential, not merely theoretical.
+In TLA + , a state is an assignment of values to variables. An action is
+a predicate over pairs of states: the current state (unprimed variables
+x) and the next state (primed variables x′ ). The syntax itself enforces
+unidirectionality—there is no mechanism to refer to a previous state.11 A         11
+                                                                                    Compare with physics: the Euler–
+                                                                                  Lagrange equations of classical mechanics
+behavior is an infinite sequence of states s0 , s1 , s2 , . . .—always forward,
+                                                                                  are second-order and time-symmetric.
+never backward.                                                                   They constrain trajectories, not directions.
+                                                                                  TLA + ’s unprimed/primed architecture
+                                                                                  imposes a direction that the physics does
+Temporal Operators: Forward-Only Windows                                          not require.
+
+TLA + ’s temporal operators are all forward-looking:
+
+• □P (“always P ”): P holds in every future state.
+
+• ◊P (“eventually P ”): P holds in some future state.
+
+• P ⇝ Q (“P leads to Q”): whenever P holds, Q eventually holds
+  afterward.
+
+There is no past-tense operator.12 The logic cannot express “Q was caused         12
+                                                                                    Some temporal logics (e.g., PLTL)
+                                                                                  include past operators: “P was true
+by some earlier P ” except by forward implication from P . This is F I T O
+                                                                                  at some point in the past.” Lamport
+expressed as proof methodology.                                                   deliberately excluded them from TLA. The
+                                                                                  exclusion is a design choice, not a logical
+                                                                                  necessity.
+Stuttering Equivalence: Direction Without Reversal
+Two behaviors that differ only by finite repetitions of states (“stuttering
+steps”) satisfy the same TLA + formulas. Stuttering equivalence is a
+
+
+L A M P O RT ’ S A R R O W O F T I M E                   4 of 13
+powerful refinement tool—it allows high-level and low-level specifications
+to be compared without matching step-for-step.13                                 13
+                                                                                    Stuttering is the key to TLA + ’s com-
+                                                                                 positional proof method. But notice: a
+   But stuttering is strictly forward: it inserts copies of the current state,
+                                                                                 stutter repeats the current state. It does
+never copies of a prior state. The equivalence preserves temporal direc-         not revisit a previous state. The operation
+tion. Reversal—visiting s3 after s5 —is not stuttering; it is undefined.         is idempotent, not reversible.
+
+
+
+Safety and Liveness: A Temporal Asymmetry
+Every TLA + property decomposes into safety (“nothing bad happens”) and
+liveness (“something good eventually happens”) [14].14 Safety properties         14
+                                                                                   Alpern and Schneider (1985) proved
+                                                                                 that every linear temporal property is
+are closed sets—violated by finite prefixes. Liveness properties are dense
+                                                                                 the intersection of a safety and a liveness
+sets—requiring infinite futures.                                                 property. This decomposition is itself
+   There is no dual notion of “backward liveness” (something good hap-           temporally asymmetric: safety constrains
+                                                                                 prefixes; liveness constrains suffixes.
+pened in the past) or “backward safety” (nothing bad happened before).
+The decomposition presupposes a distinguished temporal direction.
+
+
+Fairness: Constraining the Future, Not the Past
+TLA + ’s fairness conditions—weak fairness (WF) and strong fairness
+(SF)—constrain what must eventually happen given what is enabled now:15          15
+                                                                                    Without fairness, a TLA + specification
+                                                                                 permits behaviors where an enabled
+• WFf (A): if action A is continuously enabled, it must eventually be            action is ignored forever. Fairness rules
+                                                                                 this out—but it can only look forward:
+  taken.
+                                                                                 “if continuously enabled, then eventually
+                                                                                 taken.” It cannot look backward.
+• SFf (A): if action A is infinitely often enabled, it must eventually be
+  taken.
+
+Fairness conditions use future information to constrain present behav-
+ior. They cannot use past information to constrain the present—this is
+machine closure, and it enforces F I T O at the level of proof obligations.
+
+
+The 1978–1994 Trajectory
+Lamport’s intellectual trajectory from the 1978 paper to TLA + in 1994 is
+revealing.16 The happens-before relation was an informal insight; TLA + is       16
+                                                                                   This is not a criticism of Lamport’s
+                                                                                 engineering judgment. TLA + is a superb
+its formalization. The F I T O assumption, implicit in 1978, became the axiom
+                                                                                 tool for reasoning about forward-time
+of 1994. What was a modeling choice became a logical foundation.                 systems. The question is whether all
+                                                                                 systems are forward-time systems—and
+                                                                                 physics says they are not.
+F I T O and the Impossibility Theorems
+
+The three canonical impossibility results of distributed computing—the
+Two Generals problem, FLP [3], and CAP [4; 5]—are typically presented
+as fundamental physical constraints on what distributed systems can
+achieve. We argue instead that they are consequences of the F I T O assump-
+tion.17                                                                          17
+                                                                                   This is a strong claim. We are not saying
+                                                                                 the theorems are wrong. We are saying
+   The Two Generals problem demonstrates that no finite number of
+                                                                                 they are theorems about a particular
+unreliable unidirectional messages can guarantee common knowledge.               model—one that assumes forward-only
+                                                                                 information flow—and that the model is
+                                                                                 not the only possible one.
+L A M P O RT ’ S A R R O W O F T I M E                  5 of 13
+But the assumption of unidirectionality is precisely F I T O : each message
+travels forward in time, and the only way to confirm receipt is to send
+another forward-traveling message, leading to an infinite regress.
+   FLP proves that no deterministic asynchronous protocol can guaran-
+tee consensus in the presence of even a single crash failure. The proof
+exploits the indistinguishability, from any single process’s perspective, of a
+crashed process and a slow one.18 This indistinguishability arises because       18
+                                                                                   The FLP proof constructs a bivalent
+                                                                                 initial configuration and shows that every
+information propagates only forward—a process cannot “reach back” to
+                                                                                 step preserves bivalence. The construction
+determine whether a peer has failed or is merely delayed.                        depends on the fact that processes cannot
+   CAP shows that a distributed system cannot simultaneously guarantee           “reach back” to determine a peer’s state—a
+                                                                                 direct consequence of F I T O .
+consistency, availability, and partition tolerance. Consistency, in this
+context, requires maintaining a globally agreed causal order across
+partitioned subsystems—which is precisely the enforcement of a global
+DAG under conditions where the communication topology no longer
+supports it.
+   In each case, the impossibility follows from the combination of
+asynchrony and F I T O . If information flow were not constrained to be
+unidirectional—if, for instance, the causal structure of the system were
+treated as a bilateral, transactional exchange rather than a sequence of
+one-way messages—the premises of the impossibility proofs would not
+hold in their present form.
+
+
+Relativity and Local Causal Structure
+
+Special relativity eliminates absolute simultaneity: for spacelike-separated
+events, temporal order is frame-dependent.19 This much is well known,            19
+                                                                                   Lamport explicitly cited the relativistic
+                                                                                 motivation for his construction. But he
+and Lamport explicitly cites the relativistic motivation for his construc-
+                                                                                 extracted only the partial ordering (no
+tion [1].                                                                        absolute simultaneity) while discarding
+    However, relativity does more than eliminate global simultaneity. In         the deeper lesson: causal structure is local,
+                                                                                 not global.
+Minkowski spacetime, causal structure is local: only events within each
+other’s light cones stand in a definite causal relation. Spacelike-separated
+events are not merely “unordered”—they are causally disconnected. No
+global DAG exists over the full event space; the causal structure is a local
+partial order defined by the metric.
+    Lamport’s model is compatible with relativity in a narrow sense: it
+does not require a global clock. But it presumes something stronger—that
+all message-based interactions can be embedded in a single, globally
+consistent partial order.20                                                      20
+                                                                                   In relativistic terms, Lamport assumes
+                                                                                 that all communication occurs within a
+    General relativity further complicates the picture. In curved spacetime,
+                                                                                 single connected causal diamond. For
+the causal structure is dynamical—determined by the distribution of              a datacenter this is reasonable. For a
+matter and energy. Closed timelike curves are permitted solutions to the         planetary-scale or cislunar network, it is
+                                                                                 not.
+Einstein field equations. The causal structure of the universe is not a fixed
+DAG imposed from above; it is a dynamical, geometry-dependent, and
+potentially topology-changing feature of the spacetime manifold.
+
+
+L A M P O RT ’ S A R R O W O F T I M E                  6 of 13
+   Lamport eliminates the Newtonian clock. But he retains the Newtonian
+assumption that causal order is global, acyclic, and observer-independent.
+Relativity tells us that none of these properties is guaranteed.
+
+
+Indefinite Causal Order
+
+Recent work in quantum foundations demonstrates that causal order itself
+need not be definite. Oreshkov, Costa, and Brukner [15] introduced the
+process matrix formalism, which describes quantum correlations between
+operations without presupposing a background causal structure.21                 21
+                                                                                   A process matrix W acts on the tensor
+                                                                                 product of input and output spaces of local
+   Chiribella, D’Ariano, Perinotti, and Valiron [16] independently con-
+                                                                                 laboratories. If W can be decomposed
+structed the quantum switch, in which a control qubit determines whether         as a probabilistic mixture of definite
+operations A and B are applied in the order A ◦ B or B ◦ A. When the             causal orders, it is causally separable;
+                                                                                 otherwise, the operations exist in a
+control is in superposition, neither order is realized:                          genuine superposition of causal orders.
+                               1                         
+                              √ |0⟩ ⊗ A ◦ B + |1⟩ ⊗ B ◦ A .               (3)
+                                2
+No assignment of timestamps to A and B is consistent with the output.
+Happens-before is not merely unknown; it is undefined.22                         22
+                                                                                    This is the key point for distributed
+                                                                                 systems: the quantum switch is not a case
+   Hardy [17; 18] anticipated this development by proposing a framework
+                                                                                 of missing information about causal order.
+for probabilistic theories with dynamic causal structure, motivated by           It is a case where no causal order exists.
+quantum gravity. His causaloid formalism tracks causal dependencies              Lamport’s formalism has no representation
+                                                                                 for this.
+across regions of a system without assuming a fixed background ordering.
+
+
+Experimental Verification
+Indefinite causal order is not merely a theoretical possibility. Rubino et
+al. [19] provided the first experimental verification using a photonic quan-
+tum switch, measuring causal witnesses that violate bounds achievable by
+any causally definite process. Goswami et al. [20] demonstrated indefinite
+causal order at the single-photon level. Procopio et al. [21] demonstrated
+experimental superposition of gate orders.23                                     23
+                                                                                   These are laboratory experiments,
+                                                                                 not thought experiments. The causal
+    The implications for Lamport’s framework are direct: nature permits
+                                                                                 witnesses measured by Rubino et al.
+physical processes for which no DAG of events exists. Logical clocks,            violate bounds that any causally definite
+vector clocks, and any formalism that assumes a well-defined partial order       process must satisfy—analogous to Bell
+                                                                                 inequality violations ruling out local
+of events are inapplicable in principle to systems exhibiting indefinite         hidden variables.
+causal order.
+
+
+Bell’s Theorem and the F I T O Conditional
+
+Bell’s 1964 theorem [22] is often summarized as proving that quantum
+mechanics is nonlocal. More precisely, it proves that if one assumes
+(i) locality, (ii) realism, and (iii) a forward-in-time-only causal structure,
+then the resulting correlations satisfy inequalities that quantum mechanics
+violates.24                                                                      24
+                                                                                      The logical structure of Bell’s theorem is:
+                                                                                 (L ∧ R ∧ F I T O ) ⇒ Bell inequality. Nature
+                                                                                 violates the inequality. The standard
+L A M P O RT ’ S A R R O W O F T I M E                        7 of 13            response abandons L (locality). But one
+                                                                                 could equally abandon F I T O .
+   The logical structure is a conditional. F I T O is one of the premises,
+not a conclusion. The standard response—abandon locality—is not the
+only option. One may instead abandon F I T O : retrocausal models [11]
+and the transactional interpretation restore locality by permitting causal
+influence from future to past. Wood and Spekkens [23] have shown that
+any F I T O -respecting causal model of Bell violations requires fine-tuning—
+a systematic and unexplained coincidence in the causal parameters.25                25
+                                                                                      Fine-tuning in causal models is analo-
+                                                                                    gous to fine-tuning in physics: it suggests
+Dropping F I T O dissolves the fine-tuning problem.
+                                                                                    that the model is missing something.
+   For distributed systems, the lesson is this: Bell’s theorem does not             Dropping F I T O dissolves the fine-tuning
+validate F I T O . It shows that F I T O , combined with locality and realism, is   problem entirely.
+
+insufficient to account for observed physics. A distributed systems theory
+built on F I T O inherits this insufficiency.
+
+
+Category-Theoretic Frameworks Beyond the DAG
+
+If the DAG is not fundamental, what replaces it? Category-theoretic
+approaches to quantum mechanics and causality offer one answer.
+    Coecke and Kissinger [24; 25] develop categorical quantum mechanics
+(CQM), in which processes (morphisms) and their composition are
+primitive.26 Causal structure emerges from the composition rules and                26
+                                                                                       In CQM, a process is a morphism in
+                                                                                    a monoidal category. Composition is
+symmetries of a monoidal category, rather than being imposed as a
+                                                                                    sequential; tensor product is parallel.
+global DAG. CQM naturally accommodates indefinite causal order: the                 Causal structure emerges from the algebra,
+composition of morphisms does not require a pre-defined total or partial            not from a pre-imposed graph. The DAG
+                                                                                    is one possible algebra—but not the only
+order.                                                                              one.
+    Abramsky [26] extends this approach with a topological treatment of
+causality, in which causal structure is not a combinatorial object (a graph)
+but a topological one—admitting continuous deformations between
+regions of definite and indefinite order. His earlier work with Branden-
+burger [27] established a sheaf-theoretic framework for contextuality that
+applies directly to causal structure: the local consistency of causal orders
+need not extend to global consistency, just as local measurement contexts
+in quantum mechanics need not admit a global hidden-variable model.27               27
+                                                                                      Sheaf theory formalizes exactly the
+                                                                                    pattern we see in distributed systems:
+    Lal [28] formalizes causal structure within CQM as a categorical
+                                                                                    local views are consistent, but they
+construct that subsumes definite, dynamical, and indefinite orderings as            cannot always be patched together into
+special cases.                                                                      a globally consistent picture. Abramsky
+                                                                                    and Brandenburger proved that this is
+    These frameworks share a crucial feature: they do not presuppose a              a topological obstruction, not merely a
+global DAG. Lamport’s happens-before is a special case—the case in which            practical difficulty.
+causal structure is both definite and globally consistent. The categorical
+approach reveals this as one point in a much larger space of possibilities.
+
+
+Information Symmetry as Primitive
+
+If temporal precedence is not fundamental, what is? We propose that
+the primitive for distributed consistency should be symmetric mutual
+
+
+L A M P O RT ’ S A R R O W O F T I M E                    8 of 13
+information alignment rather than happens-before ordering.28                     28
+                                                                                     This is the constructive proposal of the
+                                                                                 paper. The preceding sections show that
+   Mutual information I (X; Y ) = I (Y ; X ) is inherently symmetric. It
+                                                                                 F I T O is a category mistake. This section
+measures the reduction in uncertainty about one variable given knowl-            sketches what might replace it.
+edge of the other, without privileging either variable as “cause” or “effect.”
+Landauer’s principle [29] and Bennett’s analysis of reversible computa-
+tion [30] establish that information and thermodynamics are linked—but
+the link is through entropy production, not through a pre-given causal
+arrow.29 The thermodynamic arrow of time is itself emergent, a conse-            29
+                                                                                   Landauer (1961): erasing one bit
+                                                                                 costs kT ln 2 of energy. Bennett (1982):
+quence of boundary conditions and the second law, not a fundamental
+                                                                                 computation can be thermodynamically
+feature of the microscopic dynamics.                                             reversible if no information is erased. The
+   This suggests a reframing:                                                    arrow of time in computation is the arrow
+                                                                                 of erasure, not the arrow of causation.
+
+                         Correctness ̸= Temporal Precedence.              (4)
+
+Instead:
+
+        Correctness = Symmetric Mutual Information Conservation.          (5)
+
+   In this view, a distributed transaction is correct not because events
+occur in the right order, but because the mutual information between
+interacting subsystems is conserved across the interaction boundary. Fail-
+ure is not a violation of temporal ordering; it is an epistemic mismatch—a
+divergence in what the subsystems know about each other.
+   Rovelli’s relational quantum mechanics [31] provides a physical model
+for this perspective: properties exist only relative to other systems, and
+“state” is a summary of one system’s information about another.30 The            30
+                                                                                   Rovelli: “The world is not a collection
+                                                                                 of things, it is a collection of events. . . ” If
+thermal time hypothesis of Connes and Rovelli [32] further suggests that
+                                                                                 state is relational, then consistency is a
+time itself is an emergent parameter of the informational state, not a           property of relationships, not of orderings.
+background against which information evolves.
+
+
+Logical Clocks as Coordinate Systems
+
+In general relativity, coordinate systems are representational tools, not
+features of physical reality. The physics is contained in the metric tensor
+and the curvature, not in the choice of coordinates.31                           31
+                                                                                   Einstein spent years struggling with
+                                                                                 coordinate systems before arriving at
+   We propose that logical clocks occupy an analogous role in distributed
+                                                                                 general covariance: the principle that
+systems. They are coordinate systems imposed on an underlying causal             the laws of physics take the same form
+structure—useful for computation and proof, but not ontologically funda-         in all coordinate systems. The content of
+                                                                                 general relativity is coordinate-free.
+mental.
+   Lamport clocks embed the partial order into N. Vector clocks [6; 7]
+embed it into Nn . Both embeddings presuppose that the underlying
+structure is a DAG—that there exists a partial order to embed. If the
+causal structure is indefinite, or if it is relational and observer-dependent,
+then the embedding is not merely approximate; it is a misrepresentation of
+the ontology.
+
+
+L A M P O RT ’ S A R R O W O F T I M E                   9 of 13
+   This is the category mistake made precise: logical clocks treat an epis-
+temic coordinate system as if it were an ontic feature of the distributed
+system.
+
+
+Discussion
+
+We are not arguing that Lamport’s work is without value. The happens-
+before relation and logical clocks were a genuine advance: they showed
+that distributed correctness does not require synchronized physical clocks,
+and they provided practical tools that remain in wide use nearly fifty
+years later.32                                                                  32
+                                                                                  Lamport received the Turing Award
+                                                                                in 2013, in large part for this work. The
+    Our argument is that the advance was incomplete. Lamport removed
+                                                                                award was deserved. Our argument is that
+the clock but retained the arrow. He replaced Newtonian absolute time           the advance was incomplete, not that it
+with a different absolute: a globally well-defined, acyclic, observer-          was wrong.
+
+independent causal order. This is weaker than Newton, but it is still
+stronger than what physics requires.
+    Relativity requires only local causal structure. Quantum mechanics
+permits indefinite causal order. The thermodynamic arrow of time is
+emergent, not fundamental. Bell’s theorem, read correctly, shows that F I T O
+is a problematic assumption, not a validated one.
+    The impossibility theorems of distributed computing—FLP, Two Gener-
+als, CAP—are theorems about F I T O systems. They tell us what cannot be
+done if information flows only forward. They do not tell us what cannot
+be done in general. Recognizing this distinction opens a design space that
+the current theoretical framework forecloses.
+    A distributed systems theory built on information symmetry rather than
+temporal precedence—on mutual information conservation rather than
+happens-before ordering—would not be subject to the same impossibility
+results, because it would not make the same assumptions. Whether such
+a theory can be made practical is an engineering question. That it is
+conceptually coherent is what this paper has aimed to establish.
+
+
+Conclusion
+
+Lamport’s 1978 paper is a landmark. But its happens-before relation
+embeds a hidden arrow of time—the Forward-In-Time-Only assumption—
+that is stronger than anything physics requires and incompatible with the
+indefinite causal order that quantum mechanics permits.
+   This arrow is a category mistake: it treats an epistemic ordering of
+message paths as if it were the ontic causal structure of physical reality.
+Relativity, quantum foundations, and information theory all point toward
+a deeper primitive—one in which time and causal order are emergent
+rather than fundamental, and in which mutual information, not temporal
+precedence, serves as the basis for consistency.
+
+
+L A M P O RT ’ S A R R O W O F T I M E                 10 of 13
+   Logical clocks are coordinate systems, not physics. Lamport’s arrow of
+time is not the arrow of time.33                                              33
+                                                                                “Lamport removed the clock but
+                                                                              retained the arrow.” This sentence
+                                                                              summarizes the entire paper.
+Acknowledgments
+
+The author acknowledges the use of AI-assisted tools for literature review
+and structural refinement. All interpretations, claims, and conclusions are
+solely the responsibility of the author.
+
+
+References
+
+ [1] Leslie Lamport. Time, clocks, and the ordering of events in a
+     distributed system. Communications of the ACM, 21(7):558–565,
+     1978.
+
+ [2] Gilbert Ryle. The Concept of Mind. Hutchinson, 1949.
+
+ [3] Michael J. Fischer, Nancy A. Lynch, and Michael S. Paterson. Impos-
+     sibility of distributed consensus with one faulty process. Journal of
+     the ACM, 32(2):374–382, 1985.
+
+ [4] Eric A. Brewer. Towards robust distributed systems. In Proceedings
+     of the 19th ACM Symposium on Principles of Distributed Computing,
+     2000. Keynote address.
+
+ [5] Seth Gilbert and Nancy Lynch. Brewer’s conjecture and the feasibility
+     of consistent, available, partition-tolerant web services. ACM SIGACT
+     News, 33(2):51–59, 2002.
+
+ [6] Colin J. Fidge. Timestamps in message-passing systems that preserve
+     the partial ordering. In Proceedings of the 11th Australian Computer
+     Science Conference, pages 56–66, 1988.
+
+ [7] Friedemann Mattern. Virtual time and global states of distributed
+     systems. In Proceedings of the International Workshop on Parallel and
+     Distributed Algorithms, pages 215–226, 1989.
+
+ [8] Claude E. Shannon. A mathematical theory of communication. The
+     Bell System Technical Journal, 27(3):379–423, 1948.
+
+ [9] Robert W. Spekkens. Evidence for the epistemic view of quantum
+     states: A toy theory. Physical Review A, 75:032110, 2007.
+
+[10] John Archibald Wheeler and Richard P. Feynman. Interaction with the
+     absorber as the mechanism of radiation. Reviews of Modern Physics,
+     17(2–3):157–181, 1945.
+
+[11] John G. Cramer. The transactional interpretation of quantum
+     mechanics. Reviews of Modern Physics, 58(3):647–688, 1986.
+
+
+L A M P O RT ’ S A R R O W O F T I M E               11 of 13
+[12] Leslie Lamport. The temporal logic of actions. ACM Transactions on
+     Programming Languages and Systems, 16(3):872–923, 1994.
+
+[13] Amir Pnueli. The temporal logic of programs. In Proceedings of the
+     18th IEEE Symposium on Foundations of Computer Science, pages
+     46–57, 1977.
+
+[14] Martín Abadi and Leslie Lamport. The existence of refinement
+     mappings. In Proceedings of the Third Annual IEEE Symposium on
+     Logic in Computer Science (LICS), 1988.
+
+[15] Ognyan Oreshkov, Fabio Costa, and Časlav Brukner. Quantum
+     correlations with no causal order. Nature Communications, 3:1092,
+     2012.
+
+[16] Giulio Chiribella, Giacomo Mauro D’Ariano, Paolo Perinotti, and
+     Benoit Valiron. Quantum computations without definite causal
+     structure. Physical Review A, 88(2):022318, 2013.
+
+[17] Lucien Hardy. Probability theories with dynamic causal structure: A
+     new framework for quantum gravity. 2005.
+
+[18] Lucien Hardy. Towards quantum gravity: A framework for probabilis-
+     tic theories with non-fixed causal structure. Journal of Physics A, 40:
+     3081–3099, 2007.
+
+[19] Giulia Rubino, Lee A. Rozema, Adrien Feix, Mateus Araújo, Jonas M.
+     Zeuner, Lorenzo M. Procopio, Časlav Brukner, and Philip Walther.
+     Experimental verification of an indefinite causal order. Science
+     Advances, 3(3):e1602589, 2017.
+
+[20] K. Goswami, C. Giarmatzi, M. Kewming, F. Costa, C. Branciard,
+     J. Romero, and A. G. White. Indefinite causal order in a quantum
+     switch. Physical Review Letters, 121:090503, 2018.
+
+[21] Lorenzo M. Procopio, Amir Moqanaki, Marco Araújo, Fabio Costa,
+     Irati Alonso Calafell, Emma G. Dowd, Deny R. Hamel, Lee A.
+     Rozema, Časlav Brukner, and Philip Walther. Experimental su-
+     perposition of orders of quantum gates. Nature Communications, 6:
+     7913, 2015.
+
+[22] John S. Bell. On the Einstein-Podolsky-Rosen paradox. Physics, 1(3):
+     195–200, 1964.
+
+[23] Christopher J. Wood and Robert W. Spekkens. The lesson of causal
+     discovery algorithms for quantum correlations: Causal explanations
+     of Bell-inequality violations require fine-tuning. New Journal of
+     Physics, 17:033002, 2015.
+
+
+
+L A M P O RT ’ S A R R O W O F T I M E                12 of 13
+[24] Bob Coecke and Aleks Kissinger. Picturing Quantum Processes: A First
+     Course in Quantum Theory and Diagrammatic Reasoning. Cambridge
+     University Press, 2017.
+
+[25] Bob Coecke and Aleks Kissinger. Categorical quantum mechanics
+     I: Causal quantum processes. 2017. In Categories for the Working
+     Philosopher, ed. E. Landry, Oxford University Press.
+
+[26] Samson Abramsky. The topology of causality. 2023.
+
+[27] Samson Abramsky and Adam Brandenburger. The sheaf-theoretic
+     structure of non-locality and contextuality. New Journal of Physics, 13:
+     113036, 2011.
+
+[28] Raymond Lal. Causal Structure in Categorical Quantum Mechanics.
+     PhD thesis, University of Oxford, 2012.
+
+[29] Rolf Landauer. Irreversibility and heat generation in the computing
+     process. IBM Journal of Research and Development, 5(3):183–191,
+     1961.
+
+[30] Charles H. Bennett. The thermodynamics of computation—a review.
+     International Journal of Theoretical Physics, 21(12):905–940, 1982.
+
+[31] Carlo Rovelli. Relational quantum mechanics. International Journal
+     of Theoretical Physics, 35(8):1637–1678, 1996.
+
+[32] Alain Connes and Carlo Rovelli. Von Neumann algebra automor-
+     phisms and time-thermodynamics relation in generally covariant
+     quantum theories. Classical and Quantum Gravity, 11(12):2899–
+     2917, 1994.
+
+
+
+
+L A M P O RT ’ S A R R O W O F T I M E                 13 of 13
+

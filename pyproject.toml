@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anvil-events"
+version = "0.1.0"
+description = "Fleet lifecycle event bus and journal for the Anvil family (stdlib-only)."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "Sekou Doumbouya" }]
+dependencies = []   # stdlib-only by design
+
+[project.optional-dependencies]
+dev = ["pytest", "coverage>=7.6"]
+
+[project.scripts]
+anvil-events = "anvil_events.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["anvil_events*"]

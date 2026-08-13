@@ -1,0 +1,921 @@
+                                                LogPlayer: Fault-tolerant Exactly-once Delivery using gRPC
+                                                                 Asynchronous Streaming
+                                                                    Mohammad Roohitavaf                                                                          Kun Ren
+                                                                              eBay Inc.                                                                          eBay Inc.
+                                                                         San Jose, CA, USA                                                                  San Jose, CA, USA
+                                                                       mroohitavaf@ebay.com                                                                 kuren@ebay.com
+
+                                                                           Guogen Zhang∗                                                                Sami Ben-Romdhane
+                                                                             Netskope Inc.                                                                      eBay Inc.
+
+
+
+
+arXiv:1911.11286v1 [cs.DC] 26 Nov 2019
+                                                                         Santa Clara, CA, USA                                                              San Jose, CA, USA
+                                                                        gzhang@netskope.com                                                            sbenromdhane@ebay.com
+
+                                         ABSTRACT                                                                                      however, this approach makes the machine maintaining the WAL a
+                                         In this paper, we present the design of our LogPlayer that is a                               single-point-of-failure. To increase the availability, we can maintain
+                                         component responsible for fault-tolerant delivery of transactional                            our WAL as a replicated log hosted by a set of machines. Using
+                                         mutations recorded on a WAL to the backend storage shards. Log-                               distributed consensus algorithms such as raft [15], we can guarantee
+                                         Player relies on gRPC for asynchronous streaming. However, the                                that all machines maintain the same WAL entries with the same
+                                         design provided in this paper can be used with other asynchronous                             order, and writes to the WAL are durable even in case of failure of
+                                         streaming platforms. We model check the correctness of LogPlayer                              some nodes. Once we have our highly available WAL, we need a
+                                         by TLA+. In particular, our TLA+ specification shows that LogPlayer                           mechanism to apply WAL entries to the backend storage shards.
+                                         guarantees in-order exactly-once delivery of WAL entries to the                               It is crucial to make sure that each WAL entry is applied to the
+                                         storage shards, even in the presence of shards or LogPlayer failures.                         data exactly one time– a semantics that is known as exactly-once.
+                                         Our experiments show LogPlayer is capable of efficient delivery                               If some of the mutations are missed or applied more than one time,
+                                         with sub-millisecond latency, and it is significantly more efficient                          the correctness of the applications may be violated. For example,
+                                         than Apache Kafka for designing a WAL system with exactly-once                                consider a transaction that adds an item to a customer’s shopping
+                                         guarantee.                                                                                    cart. For this transaction, either missing the item or adding it to the
+                                                                                                                                       shopping cart more than one time is unacceptable.
+                                         KEYWORDS                                                                                          In this paper, we present the design of LogPlayer, a component
+                                                                                                                                       responsible for pushing mutations of transactions written to a WAL
+                                         log, exactly-once delivery, stream processing, gRPC, fault-tolerance,
+                                                                                                                                       to backend storage shards with the exactly-once delivery guarantee.
+                                         TLA+, transaction, raft, Kafka
+                                                                                                                                       LogPlayer uses asynchronous streaming to efficiently send updates
+                                         ACM Reference Format:                                                                         to storage shards without being affected by failed or degraded
+                                         Mohammad Roohitavaf, Kun Ren, Guogen Zhang, and Sami Ben-Romdhane.                            shards. LogPlayer relies on gRPC [10] for asynchronous streaming.
+                                         2019. LogPlayer: Fault-tolerant Exactly-once Delivery using gRPC Asynchro-
+                                                                                                                                       However, the design provided in this paper can be used with any
+                                         nous Streaming. In Proceedings of ACM Conference (Conference’17). ACM,
+                                         New York, NY, USA, 12 pages. https://doi.org/10.1145/nnnnnnn.nnnnnnn
+                                                                                                                                       other asynchronous streaming platform that utilizes the notion
+                                                                                                                                       of the completion queue. We provide a TLA+ [13] specification,
+                                         1     INTRODUCTION                                                                            in PlusCal language, for model checking the correctness of our
+                                                                                                                                       LogPlayer. This model proves the algorithms provided in this paper
+                                         Write-ahead logging [9] is one of the most popular approaches                                 guarantee exactly-once delivery even in the presence of shard or
+                                         for providing atomicity and durability for transactions. A database                           LogPlayer failures.
+                                         management system usually appends the mutations of a transaction                                  Deterministic databases or variants[8, 16, 17] have shown promise
+                                         to a Write-Ahead Log (WAL), before applying the mutations to                                  to remove expensive commit protocols in scalable distributed de-
+                                         the actual data. For a single-node database, we can maintain the                              ployments, and enable higher amounts of transactional throughput
+                                         WAL as an append-only file on the disk. For a distributed database,                           and concurrency. LogPlayer is among critical components for a
+                                         ∗ Work done while the author was at eBay Inc.                                                 deterministic database system, as it facilitates pushing mutations
+                                                                                                                                       of the committed transactions to the database shards. Currently,
+                                         Permission to make digital or hard copies of all or part of this work for personal or         LogPlayer is used in an architecture for providing strictly serializ-
+                                         classroom use is granted without fee provided that copies are not made or distributed
+                                         for profit or commercial advantage and that copies bear this notice and the full citation     able transactions across microservices called GRIT developed for
+                                         on the first page. Copyrights for components of this work owned by others than ACM            eBay’s data platform [18]. This architecture has been also used for
+                                         must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+                                         to post on servers or to redistribute to lists, requires prior specific permission and/or a
+                                                                                                                                       developing a transactional backend storage for JanusGraph [11].
+                                         fee. Request permissions from permissions@acm.org.                                                Our experiments with the C++ implementation of LogPlayer
+                                         Conference’17, July 2017, Washington, DC, USA                                                 shows it can efficiently deliver log entries to the storage shards. In
+                                         © 2019 Association for Computing Machinery.                                                   all of our experiments, the median and average LogPlayer delay
+                                         ACM ISBN 978-x-xxxx-xxxx-x/YY/MM. . . $15.00
+                                         https://doi.org/10.1145/nnnnnnn.nnnnnnn                                                       remain less than 1 millisecond. We show our system is significantly
+Conference’17, July 2017, Washington, DC, USA                                                   Mohammad Roohitavaf, Kun Ren, Guogen Zhang, and Sami Ben-Romdhane
+
+
+faster than a WAL system created using Apache Kafka [4] with the                             LogPlayer constantly checks the health of the targets and stops
+same quality of service. For instance, for transactions with 10 KB                        adding messages to a target queue, once it finds out the target has
+payload spanning 10 shards, our system, on average, is 4 times                            crashed/disconnected. Thus, a target misses the entries that are
+faster than a similar system with Apache Kafka. The advantage                             dispatched while the target is down/disconnected. When the target
+of our system is greater for the tail latency, as we observed our                         comes back, LogPlayer creates a recovery stream that is responsible
+system is 6 times faster than the alternative design with Apache                          for reading entries missed by the target. The target joins the main
+Kafka regarding the 99th percentile of the delay of delivering WAL                        stream again when the catchup process is completed. We explain
+entries to the storage shards.                                                            the details of this process in Section 2.2. To communicate with
+   The rest of paper is organized as follows: In Section 2, we provide                    the targets, LogPlayer relies on gRPC [10] for streaming with FIFO
+the architecture and algorithms of LogPlayer. Section 3 provides the                      guarantee. To each target, LogPlayer maintains a bidirectional asyn-
+TLA+ specification. In Section 4, we discuss how LogPlayer can be                         chronous streaming channel. An asynchronous streaming channel
+configured with LogStore to form a highly available WAL system.                           in gRPC works with a completion queue. Specifically, we assign
+Section 5 reviews the related work and provides an alternative                            a tag to each read/write operation. The operation does not block.
+design with Apache Kafka. We provide experimental results in                              Instead, when gRPC is done with the operation, the tag we assigned
+Section 6. Finally, Section 7 concludes the paper.                                        to it shows up on the completion queue. We can have multiple com-
+                                                                                          pletion queues each assigned to a set of streams. However, since
+2     LOGPLAYER DESIGN                                                                    processing the completion queue is very lightweight (as we will see
+                                                                                          Section 2.4), we believe having only one completion queue with
+In this section, we focus on the design of LogPlayer. We first provide
+                                                                                          one processing thread for all streams is enough. Alternatively, one
+the overall architecture and then, explain the components in more
+                                                                                          could use synchronous streaming. Using a bidirectional synchronous
+detail.
+                                                                                          streaming channel, the sender can keep writing to the stream in
+                                                                                          one thread, and read the responses concurrently in another thread.
+2.1     Architecture                                                                      Since in the synchronous streaming, read operations are blocking,
+Figure 1 shows the architecture of LogPlayer. The job of LogPlayer                        this approach needs n threads to read the responses from n tar-
+is reading the entries of a log service, processing, and sending them                     gets which is not desired. That is why we preferred asynchronous
+to the right destinations. We call each destination a target. The                         streaming over synchronous streaming.
+communication with the log service is done by the fetcher com-                               LogPlayer guarantees in-order exactly-once delivery of log en-
+ponent. This component is responsible for feeding the LogPlayer                           tries to the targets, i.e., targets do not need to check the entries
+with a stream of log entries. Using a fetcher, LogPlayer creates a                        that they receive from LogPlayer to make sure that they are not
+stream, called main stream, for reading log entries and delivering                        out-of-order or duplicate. The targets, however, must make sure
+them to the current healthy targets. This stream never finishes and                       consuming an entry happens atomically together with durably stor-
+is supposed to run for the entire lifetime of a LogPlayer execution.                      ing the index of the entry. In particular, a target must be able to
+In addition to this ongoing stream, ad hoc recovery streams may                           retrieve the index of the last entry that it has consumed, even after
+also be created for reading only limited ranges of entries missed by                      recovering from a crash. In Section 2.5, we explain how this index
+failed targets after they come back. Once the fetcher receives a new                      is used to resume delivering entries to a failed target after it comes
+entry from the log service, it calls the dispatcher. The dispatcher                       back. Next, we focus on the details of the components.
+processes the log entry and adds proper messages to the target
+queues. Keeping a separate queue for each target prevents a slow
+or failed target from slowing the delivery to the other targets.                          2.2    Target Queue
+                                                                                          A target queue is responsible for maintaining the entries destined
+                                                                                          at a target. In addition to the typical queue interface, the target
+                                   LogPlayer                                              queue provides necessary functionalities for batching and recovery.
+                                                                                          Each target queue has two internal typical queues. One queue is
+                                         Completion Queue
+                                                                                          called normal queue that maintains the entries of the main stream,
+                                                                                          and the other is called catchup queue that maintains the entries
+                                                                                          of the recovery stream. A target queue has four states shown in
+
+
+         Distributed Log Service
+                                                  Target Queue 1    stream 1   Target 1
+                                                                                          Figure 2. The Normal (N) state means that the target which this
+                                    Fetcher
+                                                                                          queue belongs to is up and no recovery is in process for that target.
+                                                   Target Queue 2   stream 2   Target 2   The Recovery Fetching (RF) state means that the target is up, but
+                                   Dispatcher                                             a recovery is in process for it and fetching from log service is not
+                                                                                          completed (i.e., there exists an entry of the main stream missed by
+                                                                                          the target that has not been yet pushed to the queue). The Fetching
+                                                  Target Queue S    stream S   Target S   Completed (FC) means that the target is up, recovery is in process,
+                                                                                          and fetching from log service is completed. Finally, the Suspended
+                                                                                          (S) state means the target is down/disconnected.
+                                                                                             The basic behavior of the target queue is shown in Algorithm 1.
+                                     Figure 1: Architecture of LogPlayer
+                                                                                          To push a new entry, we have to specify whether the entry belongs
+LogPlayer: Fault-tolerant Exactly-once Delivery using gRPC Asynchronous Streaming                                              Conference’17, July 2017, Washington, DC, USA
+
+
+to the main stream or a recovery stream. If the entry belongs to the                                               suspend
+                                                                                                                                 N             fetchingCompleted
+main stream, the target queue adds it to its normal queue. Otherwise,                                                                          restart
+
+it adds the entry to its catch-up queue. We assign a term to each                                            S
+                                                                                                                                     suspend
+                                                                                                                                               RF
+target. The term of a target is initialized to 1, and it increments                                                restart
+                                                                                                                              pop               fetchingCompleted
+by one every time the target crashes/disconnects and comes back.                                                             front
+
+When we are pushing an entry to a target queue, we have to specify                                                 suspend      FC
+that the entry is intended to be sent in which term. If the term                                                   Normal Queue
+is expired, the target queue drops the entry. This mechanism is                                         85, 84
+                                                                                                   Normal Stream              83         45 44
+designed to prevent delivering duplicate entries to a target due to                                                                                 44, 43, …, 16, 15
+                                                                                                                                                     Output Stream
+failures. The target queue also does not push any entry, when it is                                     43, 42
+                                                                                                                              41         16 15
+                                                                                                 Catch-up Stream
+in state S. To access the front entry of the queue, the target queue
+                                                                                                                   Catch-up Queue
+checks its state. Being in RF or FC means that there are still entries
+of the main stream missed by the target that have to be sent to the
+target. Thus, if the queue is in RF or FC, and catchup queue is not                    Figure 2: Internal queues and states of a target queue
+empty, the target queue returns the front of its catchup queue. If
+the queue is in the normal state and the normal queue is not empty,
+it returns the front of its normal queue. In any other situation, it                Algorithm 1 Target Queue - part 1
+returns ⊥ indicating that the queue is not ready to provide the                      1: push (e, is N ormal , t erm)
+next entry. Similarly, the popping behavior depends on the state                     2:   lock (Lq )
+of the queue. If queue is in RF or FC, it pops the catchup queue. If                 3:   if (st at e , S ∧(is N ormal ∨ t erm = cur r ent _t erm))
+the queue is in FC and the catchup queue is empty after this pop,                    4:      if (is N ormal ) normal .push(e)
+the queue transitions to the normal state, as all missed entries are                 5:      else cat chup.push(e)
+popped from the queue and target is ready to receive entries pushed                  6:   unlock (Lq )
+by the main stream. If the queue is in the normal state, it simply                   7: front
+pops its normal queue.                                                               8:    if ((st at e = RF ∨ FC) ∧ ¬cat chup .isEmpty)
+    Once a target is down/disconnected, the health checker calls the                 9:       return cat chup.front
+suspend function of the corresponding target queue. This routine                    10:    else if ((st at e = FC) ∧ cat chup .isEmpty)
+clears the normal and catchup queues and sets the state of the                      11:       st at e ← N
+queue to S. As mentioned above and we will explain in more detail                   12:       return normal .front
+in Section 2.5, once a failed target comes back, a recovery stream                  13:    else if (st at e = N ∧ ¬normal .isEmpty)
+                                                                                    14:       return normal .front
+may be created to provide it with entries that it has missed. When
+                                                                                    15:    else return ⊥
+the recovery fetcher is done with pushing entries missed by the
+target, it calls the f etchinдCompleted routine. If the queue is in RF              16: pop
+and term has not expired, f etchinдCompleted changes the state of                   17:   if ((st at e = RF ∨ FC) ∧ ¬cat chup .isEmpty)
+the queue depending on the catchup queue. If the catchup queue                      18:      cat chup.pop
+is empty, it means all missed entries have been already sent to the                 19:      if (st at e = FC ∧ cat chup .isEmpty)
+                                                                                    20:         st at e ← N
+target. Thus, it changes the state to N and calls sendN ext to send
+                                                                                    21:   else if (st at e = N ∧ ¬normal .isEmpty)
+the next entry to the target. Otherwise, it changes the state to FC,                22:      normal .pop
+which means fetching the missed entries is done, but sending them
+to the target is not finished yet.                                                  23: suspend
+    To reduce the number of gRPC calls and consequently the num-                    24:    lock (Lq )
+ber of entries in the completion queue, we send the entries in                      25:    st at e ← S
+                                                                                    26:    while (¬normal .isEmpty) normal .pop
+batches. Algorithm 2 shows the batching behavior of the target
+                                                                                    27:    while (¬cat chup.isEmpty) cat chup .pop
+queue. To create a new batch, we keep accessing the front entry of                  28:    delete and clean popped entries
+the queue as explained above, until the front entry is not available                29:    delete currentBatch
+or batch size reaches the given maximum value. After sending a                      30:    unlock (Lq )
+batch, we add it to a map called popped. The target queue does not
+                                                                                    31: fetchingCompleted (t erm)
+delete the memory allocated to the popped batches unless being
+                                                                                    32:    if (st at e = RF ∧cur r ent _t erm = t erm)
+explicitly called to do that. In Section 2.4, we explain when popping
+                                                                                    33:       if (cat chup.isEmpty) st at e ← N
+and deleting batches are called for target queues.                                  34:       else
+                                                                                    35:          st at e ← FC
+                                                                                    36:          send N ex t (id )
+
+2.3     Dispatching
+Once the fetcher learns a new log entry, it calls the dispatcher to
+process the new entry as shown in Algorithm 3. A single log entry                   dispatcher generates the required messages, pushes them to the tar-
+may require sending multiple messages to different targets. The                     get queues, and calls sendN ext with the ids of the receiving targets.
+Conference’17, July 2017, Washington, DC, USA                                                      Mohammad Roohitavaf, Kun Ren, Guogen Zhang, and Sami Ben-Romdhane
+
+
+Algorithm 2 Target Queue - part 2                                                            Algorithm 3 Dispatcher
+ 1: nextBatch (max _size)                                                                     1: dispatch (log entry e, is N ormal , t erm)
+ 2:   lock (Lq )                                                                              2:    lock (Ld )
+ 3:   cur r ent Bat ch ← empty_batch                                                          3:    for (each id in e .t ar дet _ids)
+ 4:   s ← 0;                                                                                  4:       if (l ast _acks[id ] < e .index )
+ 5:   f ← front                                                                               5:          t ar дet _queues[id ].push(m, is N ormal , t erm)
+ 6:   while (s ≤ max _size and f ,⊥)                                                          6:          sendNext(id )
+ 7:      cur r ent Bat ch.add(f )                                                             7:          readNext(id )
+ 8:      pop                                                                                  8:    if (is N ormal ) cur r ent _index ← e .index
+ 9:      f ← front                                                                            9:    unlock (Ld )
+10:      s ←s +1
+                                                                                             10: sendNext (id )
+11:   return cur r ent Bat ch
+                                                                                             11:    lock (L s )
+12:   unlock (Lq )
+                                                                                             12:    if (st r eams[id].wr it e_st atus = ready)
+13: popBatch                                                                                 13:          bat ch ← t ar дet _queues[id].nextBatch
+14:   lock (Lp )                                                                             14:       if (bat ch , empty_batch ∧st at e , S)
+15:   index ← cur r ent Bat ch .l ast Ent ry .index                                          15:          st r eams[id ].write(bat ch, ⟨id, wr it e ⟩)
+16:   popped[index ] ← cur r ent Bat ch                                                      16:          st r eams[id ].wr it e_st atus ← not-ready
+17:   unlock (Lp )                                                                           17:    unlock (L s )
+18: erase (index )                                                                           18: readNext (id)
+19:    lock (Lp )                                                                            19:    lock (L r )
+20:    delete popped [index ]                                                                20:    if (st r eams[id].r ead _st atus = ready)
+21:    popped.erase(index )                                                                  21:       st r eams[id ].read (r esponses[id], ⟨id, r ead ⟩)
+22:    unlock (Lp )                                                                          22:       st r eams[id ].r ead _st atus ← not-ready
+                                                                                             23:    unlock (L r )
+
+
+Each entry has an index that is assigned by the log service. After suc-
+cessfully consuming an entry, a target writes an acknowledgment
+with the index of the entry to the stream 1 . Thus, after sending each                       integer and use it as the tag. We use a separate thread to process
+entry, the dispatcher calls readN ext to read its acknowledgment.                            the completion queue. We call this thread the completion queue
+The dispatcher avoids pushing an entry e to a queue if the corre-                            consumer thread. It is shown by a circle in Figure 1 and its behavior
+sponding target has already acknowledged consuming the entry                                 is provided in Algorithm 4. It continuously reads the next entry
+(i.e., last_ack[id] >= e.index). Whenever the dispatcher dispatches                          of the completion queue. When the completion queue is empty,
+an entry of the main stream, it updates variable current_index to                            its consumer thread gets blocked on cq.next until the next entry
+the index of the last entry of the main stream that it has dispatched.                       is available. When a write shows up on the completion queue, it
+    We can write to a gRPC stream only after the previous write has                          means it is safe to write the next entry. However, showing up a
+shown up in the completion queue. To guarantee that, we use a                                write on the completion queue does not mean that gRPC is done
+write_status flag for each stream. Upon calling sendN ext, if the                            with sending the corresponding message. Thus, we cannot delete
+status of the given stream is ready, we obtain the front entry of the                        any memory allocated to the batch. Instead, we just pop it from
+corresponding target queue to send. If the front entry is available,                         the queue, and set write_status to ready signaling that the stream
+we create the next batch of entries and write it to the stream. We                           is ready for writing the next entry. We obtain the id of the right
+include the id of the queue and the operation type (i.e. write) in the                       queue via the id that is encoded in the tag. When a read shows
+tag number. Finally, we change the state of the stream to not-ready                          up on the completion queue, it means gRPC has completed a read
+to prevent another write to stream before the new write shows up on                          operations and the response is ready in responses. We access the
+the completion queue. Similarly, we protect reading from the stream                          right entry of the responses via the id that is encoded in the tag.
+using read_status flag. We maintain the responses from targets for                           After receiving a response, we update the proper entry of last_acks
+read operations in responses. Both sendN ext and readN ext must                              with the index of the response. We also delete the memory of the
+be protected by locks, because they may be called by multiple                                batch associated with the response in the map popped of the target
+dispatcher threads and the completion queue processing thread (as                            queue, as gRPC does not need this batch anymore. Then, we set
+we will explain below).                                                                      read_status to ready and request gRPC to read the next response
+                                                                                             for this target.
+2.4      Processing the Completion Queue
+As gRPC processes the read and write requests, their tags show up                            2.5    Recovery
+on the completion queue. As explained in Section 2.3, we encode                              In this section, we focus on how LogPlayer handles faults. We
+the target id and the operation type (i.e., read or write) in a single                       consider two cases. First, we see how LogPlayer handles its crash
+1 In practice, if consuming entries is expensive (e.g. requires writing to the disk, as in
+                                                                                             (i.e. how LogPlayer restarts). Then, we focus on the case where a
+the case of storage shards), the target can buffer and consume a sequence of entries         target comes back after a crash or disconnection from LogPlayer.
+together and send the acknowledgment only for the last entry in the sequence.                Finally, we provide an optimization to improve the performance
+LogPlayer: Fault-tolerant Exactly-once Delivery using gRPC Asynchronous Streaming                                 Conference’17, July 2017, Washington, DC, USA
+
+
+Algorithm 4 Completion queue consumer thread                                        by last_acks[i]. However, none of the targets needs to start its re-
+ 1: while (t aд = cq.next)                                                          covery stream from that index. Similarly, if target i crashes and
+ 2:   switch (t aд.kind)                                                            comes back, we have to start its recovery from an old index while
+ 3:      case: write                                                                it is not necessary because the target did not have any entries for a
+ 4:         t ar дet _queues[t aд.id].popBatch                                      while. To solve this issue, we send dummy entries to targets once
+ 5:         st r eams[t aд.id].wr it e_st atus ← ready                              in a while to advance the index of the last entry received by them.
+ 6:         sendNext(id )
+ 7:       case: read                                                                Algorithm 5 Recovery
+ 8:         r esponse ← r esponse[t aд.id ]
+                                                                                     1: Upon LogPlayer restart
+ 9:         l ast _acks[id ] = r esponses .index
+                                                                                     2:   for (each target i)
+10:         t ar дet _queues[t aд.id ].erase(r esponse .index )
+                                                                                     3:     l ast _ack[i] = getLastAck(i)
+11:         st r eams[t aд.id].r ead_st atus ← ready
+                                                                                     4:     st ar t _index ← min (l ast _acks) + 1
+12:         readNext(id )
+                                                                                     5:     new fetcher (st ar t _index , normal)
+                                                                                     6: Upon target i restart
+                                                                                     7:   lock (Ld )
+of both recovery cases. The recovery procedures are shown in
+                                                                                     8:   t erm ← t erm + 1
+Algorithm 5.                                                                         9:   t ar дet _queues[i] ← RF
+2.5.1 LogPlayer Recovery. Once LogPlayer restarts, it first asks                    10:   st r eams[i].wr it e_st atus ← ready
+targets the highest index of entries each of them has consumed so                   11:   l ast _acks[i] ← getLastAck()
+                                                                                    12:   if (l ast _acks[i] < cur r ent _index )
+far and puts responses in last_acks. Then, it sets the minimum of
+                                                                                    13:      end_index ← cur r ent _index
+all entries in last_acks + 1 as the start_index and creates a new                   14:      new fetcher (l ast _acks[i] + 1, end_index , recovery)
+fetcher service that starts reading log entries from the start_index.               15:   else
+It specifies type normal for this fetcher, as it is the main stream                 16:      t ar дet _queues[i] ← N
+of LogPlayer. This will cause this fetcher to set inNormal to true                  17:   unlock (Ld )
+when it calls dispatch function of the dispatcher (see Algorithm 3).
+                                                                                    18: Upon dispatching every E entries
+By starting from the minimum entry of last_ack + 1, we guarantee
+                                                                                    19:   for (target_queue i : t ar дet _queues)
+that no target misses any entry due to a LogPlayer crash.                           20:     if l ast _acks[i] < cur r ent _index − E
+2.5.2 Target Recovery. Once the health checker finds out that a tar-                21:         dummy ← empty_message
+                                                                                    22:         dummy .index ← cur r ent _index
+get is down/disconnected, it sets the status of its queue to suspended.
+                                                                                    23:         t ar дet _queues[i].push(dummy)
+Once the target i is up/connected again, we first increment the term
+of the target and change the state of the corresponding queue to
+RF. Changing state to RF guarantees that we can push new entries
+to the queue (see Algorithm 1). When LogPlayer re-establishes its                   3     CORRECTNESS
+connection with the target, it asks the target the highest index                    In this section, we focus on the correctness of our design. We first
+that it has consumed and puts it in last_asks[i]. If current_index is               explain what fault-tolerance requirements we want our LogPlayer
+greater than last_asks[i], it means the target has potentially missed               to satisfy. Then, we model check the correctness of our design using
+some entries. In this situation, we create a new fetcher service                    TLA+ [13].
+that reads entries from last_acks[i] + 1 to the current_index. Note
+that it is guaranteed that any entry with an index greater than                     3.1    Fault-tolerance
+current_index will be pushed to the queue via the normal stream.                    The purpose of fault-tolerance is to continue satisfying the desired
+Thus, the recovery stream only need to read from last_acks[i]+1 to                  specification even in the presence of faults that perturb the program
+current_index. If current_index is equal last_acks[i], it means the                 from its normal behavior. In case of our LogPlayer, we consider
+target has not missed any entry while it was down. Thus, we just set                the in-order exactly-once delivery as the desired specification. This
+the state of the queue to N. To prevent the procedure of dispatching                specification consists of two parts: 1) each log entries is eventually
+new entries and updating current_index from interfereing with the                   delivered to its targets, 2) no entry is delivered to a target more
+procedure of starting the recovery fetcher, we protect them with                    than one time or out of the order. The first property is a liveness
+the same lock Ld (see Algorithm 3).                                                 property while the second one is a safety property [2]. The failures
+                                                                                    of targets or LogPlayer are considered as faults for the overall
+2.6     Improving Recovery Performance                                              design. Note that the first property can only be satisfied if the faults
+The recovery procedures provided in Section 2.5.1 and 2.5.2 guaran-                 stop occurring (or at least happen with large enough intervals). In
+tees that targets do not miss any entries. However, both recovery                   other words, if components keep failing, it is impossible to have
+cases suffer from targets that are long behind the normal stream.                   an algorithm that satisfies the first property. Thus, we want our
+Specifically, if a target i does not receive an entry for a long time,              LogPlayer to satisfy the following two properties:
+its last_acks[i] remains significantly smaller than the index of the                   (1) After any execution with any number of faults, if faults stop
+main stream. Now, if LogPlayer restarts, according to Algorithm 5,                         occurring, each entry (added before or after faults stop) is
+we have to start the main stream from a very old index determined                          eventually delivered to its targets.
+Conference’17, July 2017, Washington, DC, USA                                    Mohammad Roohitavaf, Kun Ren, Guogen Zhang, and Sami Ben-Romdhane
+
+
+   (2) In the presence of faults, no entry is delivered to a target         ------------------------ ​MODULE​ LogPlayer -------------------------
+                                                                            EXTENDS​ TLC, Sequences, FiniteSets, Integers
+       more than once or out of the order.                                  CONSTANT​ NMESSAGES, NFAILURES
+                                                                            (* ​--​algorithm​ logplayer
+   The first property is a non-masking fault-tolerance property             \* State of the queue "N" (normal), "RF" (recovery fetching),
+that requires that the program must return to its desired behavior          \*                 "FC" (fetching completed), "S" (suspended)
+                                                                            variables​ state = ​"N"​,
+after being perturbed by faults. The second one is a failsafe fault-        normal_queue = <<>>, catchup_queue = <<>>,
+tolerance property that requires that the program cannot violate            front = 0, ​\* the front of the target queue
+its safety property in presence of faults. The combination of both          current_batch = <<>>,
+                                                                            tail_of_batch = 0,
+is masking fault-tolerance [5]. Thus, we want our LogPlayer to be           cq = <<>>, ​\* completion queue
+masking fault-tolerant to the failures of targets or LogPlayer for          current_index = 0,
+                                                                            term = 0, ​\* current term of the target
+the in-order exactly-once delivery specification.
+                                                                            \* Locks. True means lock is available
+                                                                            L_s = ​TRUE​, L_d = ​TRUE​, L_q = ​TRUE​,
+                                                                            \* the status of the gRPC connection, "N" (not-ready), "R" (ready)
+3.2     Model Checking with TLA+                                            write_status = ​"R"​,
+We can directly model a program in TLA+ [13]. However, a more               \* Fetchers. TRUE means the fetcher is running
+                                                                            run_main_fetcher = ​TRUE​, run_recovery_fetcher = ​FALSE​,
+convenient way is using PlusCal language that is more similar to            \* Stream indices
+programming languages than TLA+. The PlusCal code can then                  r_s_index = 0, r_e_index = 0,
+                                                                            last_ack \in 0..NMESSAGES;
+be translated to a TLA+ specification using TLA+ toolbox. Here,
+we do not want to explain how to describe a concurrent program
+in PlusCal language (the reader may refer to [13]). However, we                      Figure 3: PlusCal code variables definitions
+cover those parts that are necessary to understand the PlusCal
+code presented in this section. Specifying a program for model
+checking requires some art to avoid creating models with too large
+state spaces. Specifically, if we model all details of a program, the     not model the gRPC details. Thus, when the sendN ext writes to the
+model may become too large causing the model checking process             stream, we model it as if it appears immediately on the completion
+to take too much time. One approach to reduce the burden of model         queue.
+checking is to avoid modeling parts that are identical. For our              All PlusCal codes we explained so far are part of either macros or
+LogPlayer, for instance, the behavior of each target is the same.         procedures. Now, we explain our processes. Processes are the units
+Thus, it is enough to model a system with only one target. Another        that can be used to model processes and threads of a concurrent pro-
+approach is to abstracting away parts that are not necessary to check     gram. This is where PlusCal makes modeling the non-determinism
+based on our assumptions. For example, we abstract away the details       very easy. Specifically, the operations of different processes can
+of gRPC and network communications. Also, we cannot model the             interleave in any order, as it may happen for a concurrent program
+program for an infinite number of log entries or any number of            in practice. The model checker considers any possible interleav-
+failures. Thus, we model check the program for sending a limited          ing and checks the correctness of our program in all paths. We
+number of log entries and failures. We denote this parameters by          have four processes. All processes are marked with f air keyword
+NMESSAGES and NFAILURES.                                                  which means our processes never stop executing when they can
+   Figure 3 shows the variables and their initial values. Each state of   run an operation. The first process is our mainFetccher process
+the program corresponds to some assignment to its variables. The          that models the fetcher of the main stream. This process simply
+variables normal_queue, catchup_queue, and current_batch are de-          starts from index last_ack + 1 and calls dispatch for each index up
+fined as tuples that can be used to simulate queues. The initial value    to NMESSAGES. The main fetcher runs only one time. Thus, once it
+of last_ack can be any number in the range of [0, NMESSAGES]. A           dispatched all messages, it finishes. In addition to the main fetcher,
+value x greater than 0 for last_ack models the case where LogPlayer       we have recoveryFetcher process that models the recovery fetcher.
+has restarted and learned that the last entry received by the target      Note that since we may run the recovery fetcher multiple times, the
+is x (see Algorithm 5). Figure 4 describes the logic of our target        whole process is inside a while loop that finishes once the program
+queue in PlusCal. Using labels we can specify the level of atomicity      is done with sending the number of intended messages. At the
+of our operations. All operations associated with a single label are      beginning of this loop, the process waits for the recovery signal.
+executed atomically. Also, the whole body of a macro is executed          This way, we model calling the recovery fetcher once the target
+atomically. Thus, there is no label inside macros. The more labels        comes back.
+we have, the larger the state space is which consequently results in         The next process is the completion queue consumer thread (see
+the longer model checking time. Thus, to keep model checking time         Algorithm 4). We do not model read operations and network com-
+low, we have to avoid adding labels as much as possible without           munications. Thus, when an index shows up in front of the comple-
+eliminating important concurrency aspects that we are interested to       tion queue, we check if it is the correct index that the target must
+check. Therefore, for pop and дet_f ront operations we use macro,         have received. We check this using the assert instruction. Note that
+as we are sure that they are only used in nextBatch function that is      any duplicate or out of the order delivery makes this assert fail.
+protected by Lq lock (see Algorithm 2). The PlusCal code provided         Thus, here we check the safety part of our specification.
+in Figure 4 is easy to understand, as it is very similar to the pseu-        Figure 6 models the failure and recovery of the target. The num-
+docode provided in Algorithms 1 and 2. The PlusCal description of         ber of failures by this process is given by the model parameter
+the dispatcher is provided in Figure 5. As mentioned above, we do         NFAILURES. The conditions of i f and elsi f are specified such that
+LogPlayer: Fault-tolerant Exactly-once Delivery using gRPC Asynchronous Streaming                                              Conference’17, July 2017, Washington, DC, USA
+
+
+  \* ----------------------- Target Queue --------------------------                  \* --------------------- Dispatcher ---------------------------------
+  macro​ pop () ​begin                                                                procedure​ dispatch (dispatch_index, isNormal, dispatch_term) ​begin
+      ​if​ state \in {​"RF"​, ​"FC"​} /\ Len(catchup_queue) > 0 ​then                    dispatch_1: ​await​ L_d = ​TRUE​; L_d := ​FALSE​;
+            catchup_queue := Tail(catchup_queue);                                        dispatch_2: ​if​ last_ack < dispatch_index ​then
+            ​if​ state = ​"FC"​ /\ Len(catchup_queue) = 0 ​then                          dispatch_3: ​call​ push (dispatch_index, isNormal, dispatch_term);
+                  state := ​"N"​;                                                        dispatch_4: ​call​ sendNext ();
+             ​end​ ​if​;                                                                            ​end​ ​if​;
+       ​elsif​ state = ​"N"​ /\ Len(normal_queue) > 0 ​then                              dispatch_5: ​if​ isNormal ​then​ current_index := dispatch_index; ​end​ ​if​;
+            normal_queue := Tail(normal_queue); ​end​ ​if​;                              dispatch_6: L_d := ​TRUE​;
+  end​ ​macro​;                                                                          dispatch_e: ​return​;
+                                                                                      end​ ​procedure​;
+  macro​ get_front() ​begin
+    ​if​ (state = ​"RF"​ \/ state = ​"FC"​) /\ Len(catchup_queue) > 0 ​then           procedure​ sendNext ()
+           front := Head(catchup_queue);                                                ​begin
+     ​elsif​ state = ​"FC"​ /\ Len(catchup_queue) = 0 ​then                             sendNext_1: ​await​ L_s = ​TRUE​; L_s := ​FALSE​;
+           state := ​"N"​;                                                              sendNext_2: ​if​ write_status = ​"R"​ ​then
+           ​if​ Len(normal_queue) > 0 ​then                                             sendNext_3: ​call​ nextBatch();
+                 front := Head(normal_queue);                                           sendNext_4: ​if​ Len(current_batch) > 0 /\ state /= ​"S"​ ​then
+            ​end​ ​if​;                                                                             cq := cq \o current_batch;
+      ​elsif​ state = ​"N"​ /\ Len(normal_queue) > 0 ​then
+           front := Head(normal_queue);                                                                         write_status := ​"N"​; ​end​ ​if​; ​end​ ​if​;
+       ​else​ front := 0; ​end​ ​if​;                                                    sendNext_5: L_s := ​TRUE​;
+  end​ ​macro​;                                                                          sendNext_e: ​return​;
+                                                                                      end​ ​procedure​;
+  procedure​ suspend() ​begin                                                         \* -------------------------- Main Fetcher ----------------------------
+    suspend_1: ​await​ L_q = ​TRUE​; L_q := ​FALSE​;                                  fair​ ​process​ mainFetcher = 1
+             state := ​"S"​;                                                          variables​ mFetch_counter = last_ack +1;
+             normal_queue := <<>>;                                                    begin
+             catchup_queue := <<>>;                                                      mFetch_1: ​while​ mFetch_counter <= NMESSAGES ​do
+    suspend_2: L_q := ​TRUE​;                                                            mFetch_2:                  ​call​ dispatch (mFetch_counter, ​TRUE​, 0);
+    suspend_e: ​return​;                                                                 mFetch_3:                  mFetch_counter := mFetch_counter + 1; ​end​ ​while​;
+  end​ ​procedure​;                                                                   end​ ​process​;
+                                                                                      \* -------------------------- Recovery Fetcher ------------------------
+  procedure​ fetchingCompleted(fetchComp_term) ​begin                                 fair​ ​process​ recoveryFetcher = 3
+    fetchCom_1: ​if​ state = ​"RF"​ /\ fetchComp_term = term ​then                    variables​ rFetch_counter = 0, r_term = 0;
+               ​if​ Len(catchup_queue) = 0 ​then                                      begin
+                    state := ​"N"​;                                                      recFetch_1: ​while​ last_ack < NMESSAGES ​do
+                    ​call​ sendNext();                                                   recFetch_2: ​await​ run_recovery_fetcher \/ last_ack = NMESSAGES;
+                ​else                                                                                      ​if​ (last_ack = NMESSAGES) ​then​ ​goto​ recFetch_e ​else
+                    state := ​"FC"​ ​end​ ​if​; ​end​ ​if​;                                                      run_recovery_fetcher := ​FALSE​; r_term := term;
+    fetchCom_e: ​return​;                                                                                        rFetch_counter := r_s_index; ​end​ ​if​;
+  end​ ​procedure​;                                                                      recFetch_3: ​while​ rFetch_counter <= r_e_index /\
+                                                                                                                    state /= ​"S"​ /\ term = r_term ​do
+  procedure​ push (push_index, isNormal, push_term) ​begin                               recFetch_4:                     ​call​ dispatch (rFetch_counter, ​FALSE​, r_term);
+    push_1: ​await​ L_q = ​TRUE​; L_q := ​FALSE​;                                        recFetch_5:                     rFetch_counter := rFetch_counter + 1; ​end​ ​while​;
+           ​if​ state /= ​"S"​ /\ (isNormal = ​TRUE​ \/ term = push_term) ​then          recFetch_6: ​if​ rFetch_counter > r_e_index ​then
+                 ​if​ isNormal ​then                                                                             ​call​ fetchingCompleted(r_term); ​end​ ​if​;​end​ ​while​;
+                       normal_queue := Append(normal_queue, push_index);                 recFetch_e: ​skip​;
+                  ​else                                                               end​ ​process​;
+                       catchup_queue := Append(catchup_queue, push_index);            \* -------------------------- Completion Queue ------------------------
+          ​end​ ​if​; ​end​ ​if​;                                                     fair​ ​process​ completionQueue = 2
+    push_e: L_q := ​TRUE​;                                                            begin
+            ​return​;                                                                    cq_1: ​while​ last_ack < NMESSAGES ​do
+  end​ ​procedure​;                                                                      cq_2: ​await​ Len(cq) > 0;
+                                                                                         cq_3: ​if​ (state /= ​"S"​ /\ Len(cq) > 0) ​then
+  procedure​ nextBatch() ​begin                                                                     ​assert​ (Head(cq) = last_ack + 1);
+    nextBatch_1: ​await​ L_q =​TRUE​; L_q := ​FALSE​;                                               last_ack := Head(cq); ​end​ ​if​;
+               current_batch := <<>>;                                                                ​if​ (Len(cq) > 0) ​then​ cq := Tail(cq); ​end​ ​if​;
+    nextBatch_2:         get_front();                                                               write_status := ​"R"​;
+    nextBatch_3:         ​while​ front /= 0 ​do                                          cq_6: ​call​ sendNext(); ​end​ ​while​;
+                     current_batch := Append(current_batch, front);                   end​ ​process​;
+                     tail_of_batch := front;
+    nextBatch_4:            pop();
+    nextBatch_5:            get_front();​end​ ​while​;                              Figure 5: PlusCal code of dispatcher, fetchers, and comple-
+    nextBatch_e: L_q := ​TRUE​;
+               ​return​;                                                            tion queue
+  end​ ​procedure​;
+
+
+              Figure 4: PlusCal code of the target queue
+                                                                                    the state of the queue to S and call suspend routine. The rest of the
+                                                                                    process is the same as the pseudocode provided in Algorithm 5.
+                                                                                       We check the liveness part of our specification by specifying the
+                                                                                    following temporal logic property for TLA+ that requires that the
+each failure has a recovery. When a target fails, any message des-                  target must eventually receive all entries: ♢(last_ack = NMESSAGES).
+tined at the target will show up on the completion queue as failure.                When we model check our TLA+ model, the TLA+ toolbox does not
+We model this by cleaning the cq upon failure. Also, we change                      find any deadlock or assertion/property failure. This means that our
+Conference’17, July 2017, Washington, DC, USA                                                        Mohammad Roohitavaf, Kun Ren, Guogen Zhang, and Sami Ben-Romdhane
+
+
+    \* -------------- Target Failure and Recovery Simulation ---------------                                             LogStore
+    fair​ ​process​ targetFailureRecovery = 4
+                                                                                                                          Follower                    S1
+    variables​ tarFaileRec_n = 1;
+    begin
+       tarFaileRec_1: ​while​ tarFaileRec_n <= 2 * NFAILURES                                                            Leader
+                       /\ last_ack < NMESSAGES ​do                                                         TM                             LogPlayer   S2
+
+       tarFaileRec_2:             ​if​ state /= ​"S"​ /\ tarFaileRec_n < 2 * NFAILURES ​then
+       tarFaileRec_3:                   state := ​"S"​;                                                                   Follower                    ...
+       tarFaileRec_4:                   ​call​ suspend();
+                                                                                                                                                      SM
+       tarFaileRec_5:                   cq := <<>>; run_recovery_fetcher := ​FALSE​;                                     replicated log
+                       ​elsif​ state = ​"S"​ ​then
+       tarFaileRec_6:                    ​await​ L_d = ​TRUE​ /\ L_s = ​TRUE​;
+                           L_d := ​FALSE​; L_s := ​FALSE​;                                             Figure 7: Configuring LogStore and LogPlayer
+       tarFaileRec_7:                   term := term + 1; state := ​"RF"​;
+                           write_status := ​"R"​;
+                           ​if​ last_ack < current_index ​then
+                                 r_s_index := last_ack + 1;                                        The durability of the LogStore and exactly-once delivery of Log-
+       tarFaileRec_8:                       r_e_index := current_index;
+       tarFaileRec_9:                       run_recovery_fetcher := ​TRUE​;
+                                                                                               Player guarantee that once we successfully append a new transac-
+                            ​else                                                              tion to the LogStore, the mutations required by the transaction will
+       tarFaileRec_10:                       state := ​"N"​; ​end​ ​if​;                       be applied to the storage shards exactly one time, even in presence
+       tarFaileRec_11:                     L_d := ​TRUE​; L_s := ​TRUE​; ​end​ ​if​;
+       tarFaileRec_12: tarFaileRec_n := tarFaileRec_n + 1; ​end​ ​while​;                      of failure of LogPlayer or storage shards. However, there is still a
+    end​ ​process​;                                                                            possibility of duplication in our WAL due to the failure of LogStore
+    end​ ​algorithm​; ​*)                                                                      or the transaction manager. For example, suppose the transaction
+                                                                                               manager writes a transaction to the LogStore, but it crashes before
+             Figure 6: PlusCal code of failure and recovery                                    receiving the acknowledgment from the LogStore. In this case, the
+                                                                                               transaction manager may want to try again which will result in
+                                                                                               duplication, i.e., transaction will be appended and subsequently ex-
+design guarantees in-order exactly-once delivery of all messages                               ecuted two times. Avoiding duplicates due to LogStore/transaction
+in the presence of failures of the target or LogPlayer. This was not                           manager failures is out of the scope of this paper, but one approach
+the case for the first draft of our algorithms. TLA+ [13] helped us                            is to make updates to the LogStore idempotent [12] as follows: we
+to find bugs in our design. For example, in the first version of our                           can assign a sequence number to each write by the transaction man-
+algorithms, we did not have the term for the targets. We added                                 ager to the LogStore. The LogStore can, then, ignore any message
+this variable to satisfy delivery requirements after finding their                             with a duplicate sequence number from a transaction manager.
+violation via TLA+. Some deadlocks due to concurrency bugs were
+also detected by TLA+ that are fixed in algorithms presented in this                           5     RELATED WORK
+paper.                                                                                         Apache Kafka [4] and Apache Flink [3] are two open-source stream-
+                                                                                               ing platforms that have recently started supporting exactly-once
+4       CONFIGURING LOGSTORE AND                                                               semantics. In this section, we briefly review these systems and
+        LOGPLAYER                                                                              compare them with our LogPlayer.
+As explained in Section 1, the purpose of a WAL is to guarantee
+the atomicity and durability of transactions. In addition to these
+                                                                                               5.1    Kafka Transactions and Exactly-once
+requirements, we want our WAL to be highly available, i.e., our                                       Semantics
+WAL must be able to quickly resume its normal operation in case                                Apache Kafka [4] is a popular streaming platform widely used for
+of a failure. Figure 7 shows how LogPlayer can be connected to                                 designing high-throughput streaming systems. Kafka has recently
+the LogStore [1] and storage shards. Our desired requirements of                               started providing transactions that let us atomically write to multi-
+atomicity, durability, and high-availability are satisfied by the fol-                         ple Kafka partitions. These partitions can belong to different topics.
+lowing features: 1) Writes to LogStore are durable, 2) LogStore is                             For writes in the context of a transaction, Kafka guarantees either
+highly-available by replicating the log on several machines, 3) Log-                           all or none of them will be eventually visible to the consumer. Kafka
+Player guarantees in-order exactly-once delivery even in presence                              achieves this by running the Two-Phase Commit (2PC) protocol
+of failures of targets or itself, and 4) LogPlayer can easily restart or                       over partitions involved in a transaction [4]. Kafka transactions are
+be replaced by a new instance in case of a failure.                                            the key for providing the atomic read-process-write cycles. Typi-
+   LogStore maintains a replicated log using raft consensus protocol                           cally, a stream processing application consumes some records from
+[15]. This way, it guarantees that the log data is replicated on                               input streams, process them, and writes some records to the output
+several machines and all replicas have the same order of log entries.                          streams. To guarantee that each record from the input stream is
+LogStore provides high availability by changing the leader in case of                          consumed and processed one time, and resulted records are de-
+leader failure. The raft protocol guarantees that the new leader has                           livered to the output streams exactly one time, we need to make
+always the most recent log entries [15]. Thus, once we successfully                            sure that the whole read-process-write cycle is done atomically, i.e.,
+write to the leader, we can rest assured that our write is durable.                            the application should not reach a state where a record is marked
+Although to append to the WAL, the transaction manger has to                                   as consumed, but resulted records are not written to the output
+send the entry to the leader LogStore server, LogPlayer can use any                            streams or vice versa. Kafka marks a record as consumed by writing
+of the LogStore replicas to read the WAL entries.                                              to a special internal topic called offsets topic. Using the atomicity
+LogPlayer: Fault-tolerant Exactly-once Delivery using gRPC Asynchronous Streaming                                Conference’17, July 2017, Washington, DC, USA
+
+
+                                       Kafka transaction
+                                                           Shard Topic 1               We can solve problems of the design in Figure 8, by making the
+                                                                       K1   S1      transaction manager bypass the WAL topic and Kafka player, and
+                                                     K1
+                                                                                    directly write to the shard topics using Kafka transactions. This
+       T1
+                                                     K2
+                                                                                    change basically creates an implicit back-pressure to the transaction
+       {K1, K2}    WAL Topic    T1                         Shard Topic 2
+ TM                        T1
+                                     Kafka player                      K2   S2      manager and solves the instability issue. However, it requires more
+          λ
+    Arrival rate
+                                          μ                                         work by the transaction manager, as it needs to write to multiple
+                                     Process rate
+                                                                                    topics and run the 2PC which results in higher transaction response
+                                                    ✓T1
+                                                           offsets topic
+                                                                                    time. In Section 6, we show how our LogPlayer achieve better
+                                                                      ✓T1           performance compared with this design.
+
+Figure 8: WAL with exactly-once guarantee using Kafka
+                                                                                    5.2    Flink Exactly-once Semantics
+transactions.                                                                       Apache Flink [3] is a popular stream processing platform. Flink
+                                                                                    can connect to different storage and streaming systems includ-
+                                                                                    ing Kafka. The fault-tolerance of Flink relies on its checkpointing
+                                                                                    mechanism which is based on Chandy-Lamport consistent snap-
+                                                                                    shot algorithm [6]. Upon a restart, Flink loads the last checkpoint
+of Kafka transactions, we can guarantee that marking a record as                    including the states of all operators and the indexes of the input
+consumed and appending produced records to the target partitions                    streams, and then continues from there. To avoid duplicate deliv-
+(i.e., the read-process-produce cycle) happen atomically [7].                       eries, Flink requires external sinks to be transactional like Kafka
+    Figure 8 shows how we can design a WAL system using Kafka.                      streams. Specifically, sink should provide a way for Flink to write
+We use a Kafka topic as the WAL topic. This topic should have                       to them in a context of a transaction and to be able to commit or
+only one partition, as the order of transactions should be kept on                  abort the transaction. Using transactional sinks, Flink can avoid
+the WAL, and Kafka does not maintain the global ordering over                       delivering duplicate records, by not committing any write before a
+multiple partitions. In addition to the WAL topic, we have a topic                  checkpoint is completed. When we have multiple sinks, Flink must
+corresponding to each storage shard. We refer to these topics as                    make sure that writes to different sinks all commit or abort together.
+shard topics. Now, to apply mutations recorded on the WAL topic to                  For this case, Flink relies on 2PC protocol. Since to have Flink end-
+the storage shards, we have an application that reads records from                  to-end exactly-once semantics we have to use transactional sink
+the WAL topic, produces records containing partial mutations for                    like Kafka, the design of a WAL with Flink would be identical to
+different shards, and writes them to the shard topics. We call this                 the one shown in Figure 8, except we should use Flink instead of
+application Kafka player. By running the read-process-write cycle                   the Kafka player. Note that since Flink delays committing writes
+of each WAL entry in the context of a single Kafka transaction,                     until checkpointing is completed, the delay of applying mutations
+we guarantees that mutations are appended to the shard topics                       is affected by the checkpointing interval in addition to the other
+exactly one time. Now, we need to guarantee that storage shards                     delays. Thus, the delay of Flink is expected be even higher than
+also apply the mutations exactly one time. That can be achieved by                  WAL shown in Figure 8 using pure Kafka.
+atomically storing both the offsets and mutations of entries on the
+storage shards. Now, when a storage shard recovers from a crash,                    6     EXPERIMENTAL RESULTS
+it continues polling entries starting from its last stored offset. This             In this section, we evaluate the performance of a WAL system
+design, however, requires all shard topics to be durable. Otherwise,                consisting of LogStore and LogPlayer. We have developed both of
+if a broker crashes after it received shard mutations and before                    these components in C++. LogStore relies on NuRaft [14] for the
+the shard polled them, then the mutations are missed. Thus, in                      log replication. We also compare the performance of our system
+this design, we have to pay the cost of durability (i.e. distributed                with the performance of Kafka for providing exactly-once delivery.
+consensus and/or disk delay) two times; one time for the WAL                        Next, we first explain our measures of interest. Then, we explain the
+topic and one time for shard topics. On the other hand, LogPlayer                   experimental setup. Section 6.3 and 6.4 provide experimental results
+does not need to make the produced partial mutations durable, and                   only for our WAL system. Comparison with Kafka is provided in
+at the same time, it can recover from crashes without violating                     Section 6.5.
+exactly-once semantics.
+    The design in Figure 8 has a bigger problem that makes it im-                   6.1    Measures
+practical to be used, assuming all topics are run on the same Kafka
+cluster and all have the same replication factor. Specifically, the rate            We timestamp each transaction at the following time points:
+of processing WAL entries (µ) is expected to be lower than their                         • Commit time: right before transaction manager sends the
+arrival rate (λ), because for appending to WAL topic, the transaction                       append request to the WAL
+manager needs to wait only for the replication, but the Kafka player                     • Dispatch time: right before LogPlayer processes a new log
+needs to also wait for 2PC in addition to the replication. This will                        entry.
+cause the system shown in Figure 8 to be unstable, i.e., the delay of                    • Apply time: right after a target receives a new transaction
+applying mutations is expected to grow continuously. In Section 6.5,                        to apply.
+we will see how this issue causes very large delays (e.g. more than                    After a transaction is appended to the WAL, it takes some time
+10 seconds) after processing just one thousand transactions.                        for it to be applied to the actual data on the storage shards. We
+Conference’17, July 2017, Washington, DC, USA                                   Mohammad Roohitavaf, Kun Ren, Guogen Zhang, and Sami Ben-Romdhane
+
+
+define this time as the apply delay and calculate it by subtracting       increases as we increase the size of the transactions, because Log-
+commit time from the apply time. The time between dispatch to             Player needs to parse, process, and deliver larger entries. However,
+apply is mainly dominated by the delay of processing and delivering       again, the LogPlayer delay is very low; the average and median
+by LogPlayer. Thus, we call it LogPlayer delay and calculate it by        remain less than 0.31 ms, and the 99th percentile remains less than
+subtracting dispatch time from the apply time.                            0.67 ms, for all transaction sizes. Figure 10(b) shows the apply delay
+                                                                          for different transaction sizes. Although unlike the number of tar-
+6.2     Experimental Setup                                                gets, the transaction size is expected to affect the persistence delay,
+For both LogStore and Kafka, we set the replication factor to three,      since the persistence delay is largely dominated by the fsync delay,
+i.e., each WAL entry will be copied to three machines by Log-             the increase in transaction size shows only a slight increase in the
+Store/Kafka. As we will see, since LogPlayer delays are very low          apply delay, e.g. 12% increase for 10 KB transaction size compared
+i.e., less than one millisecond, we need to compute the delays very       with 1 KB.
+precisely. To eliminate any error in our measurements caused by the
+clock skew between different virtual machines, we run transaction
+                                                                          6.5    Comparison with Kafka
+manager, LogPlayer, targets, and one of the LogStore/Kafka replicas
+in one virtual machine, and run other LogStore/Kafka replicas in          In this section, we compare the performance of a WAL system
+different virtual machines. In addition to the clock skew, this config-   consisting of LogStore and LogPlayer with that of the WAL design
+uration also removes the network delays from our measurements             with Kafka explained in Section 5. First, we want to validate our
+which is desired, as we want to focus on processing delays rather         anticipation of the instability of the design provided in Figure 8. As
+than network delays that are out of the control of the algorithms.        explained in Section 5, the design with 2 levels of Kafka topics is
+Since the WAL needs the highest level of durability, we configure         expected to be unstable, as the arrival rate of log entries is expected
+both LogStore and Kafka for aggressive persistence to the disk.           to be higher than their process rate by the Kafka player. Figure 11
+For Kafka, we do that by setting flush.messages to 1 in the topic         shows how the average and 99th percentile of apply delay for
+configuration. We use virtual machines with 8 vCPUs, Intel Core           1000 transactions changes by increasing the number of targets for
+Processor (Haswell) 2.0 GHz, 16 GB RAM, and 80 GB virtual disk            transactions with 10 keys. As it is shown in Figure 11, due to WAL
+storage.                                                                  backlog, the average and 99th percentile of apply delay increase
+                                                                          to 11.26 and 21.72 seconds, respectively. Note that the diagrams
+                                                                          shown in Figure 11 flatten, as we ran the experiments for 1000
+6.3     The Effect of Number of Targets
+                                                                          transactions. However, if we keep adding entries to the system, the
+We first see how our WAL system performs for different numbers            apply delay will grow continuously. This experiment confirms that
+of targets. We measure the delays for 2 to 20 targets. Figure 9(a)        having two levels of Kafka topics without any back-pressure to the
+shows how the average and different percentiles of LogPlayer delay        transaction manager is not practical for designing our WAL. Thus,
+change, as we increase the number of targets for transactions of size     in the rest of the experiments in this section, we use the design
+10 KB (consisting of 10 key-values each with the total size of 1 KB).     where the transaction manager directly appends to the shard topics
+The LogPlayer delay increases, as we increase the number of targets,      by bypassing the WAL topic and Kafka player.
+because LogPlayer has more job for handling more targets. However,           Figure 12 compares the average and 99th percentile of apply de-
+the LogPlayer delays are very low; the average and median delays          lay of Kafka with that of LogStore-LogPlayer for various numbers
+remain less than 0.32 ms, and the 99th percentile remains less than       of targets and transactions sizes when Kafka transactions are dis-
+0.78 ms, for all cases.                                                   abled. We set the size of transactions to 10 KB when we change the
+   Figure 9(b) shows how the apply delay is affected by the number        number of targets (Figure 12(a)), and set the number of targets to 20
+of targets. The apply delay is completely dominated by the LogStore       when we change the transaction size (Figure 12(b)). Note that when
+delay which is resulted by Raft consensus delay and the delay of          transactions are disabled, Kafka cannot guarantee exactly-once se-
+the persistence to the disk, i.e., the fsync delay. These delays are      mantics, but its performance is expected to be higher, as transaction
+unaffected by the number of targets. Thus, since sub-millisecond          overheads such as running 2PC are eliminated. Figure 12 shows our
+LogPlayer delay is negligible compared with LogStore delay, the           system generally works better than Kafka even when Kafka does
+small increase in the LogPlayer delay does not affect the overall         not satisfy exactly-once semantics and our system does, especially
+apply delay. Thus, we believe the changes to the apply delay as we        for larger numbers of targets and larger transaction sizes. The ad-
+change the number of targets are due to experimental errors, espe-        vantage of our system is more clear regarding the tail latency. For
+cially for the 99th percentile that is more sensitive to environmental    instance, for 20 targets and transaction size 10 KB, regarding the
+changes (e.g. variations of the fsync delay).                             99th percentile apply latency, our system is 45% faster than Kafka.
+                                                                             Now, we compare our system with Kafka when Kafka is con-
+6.4     The Effect of Transaction Size                                    figured for exactly-once semantics by enabling the transactions.
+Now, we see how the transaction size affects performance. We              As it is shown in Figure 13, enabling Kafka transactions increases
+change the size of transactions from 1 KB to 10 KB for a system with      the apply delay significantly. This increase is resulted by the over-
+20 targets. Note that we consider transactions with various numbers       head of the 2PC protocol. In Figures 13(a), and 13(b), we presented
+of key-values each with 1 KB payload. Figure 10(a) shows how the          the average apply delay values for Kafka and our system. As the
+average and different percentiles of LogPlayer delay change, as we        number of targets increases, the apply delay of Kafka increases
+increase the size of the transactions. As expected, LogPlayer delay       almost linearly up to 10 targets. After 10 targets, the apply delay
+LogPlayer: Fault-tolerant Exactly-once Delivery using gRPC Asynchronous Streaming                                                                                                                                   Conference’17, July 2017, Washington, DC, USA
+
+
+
+                                                        P25th                P50th               P75th                   P99th          Average                            P25th              P50th          P75th               P99th        Average
+
+                                                         1.0                                                                                                                20
+                                                                                                                                                 0.77
+                                                                                                                                        0.69
+                                                                                                                      0.64    0.65                                           12.84                           12.47 12.28 12.28 12.33 13.05 12.68
+
+
+
+
+                                LogPlayer Delay (ms)
+                                                                                        0.60      0.59      0.60
+
+
+
+
+                                                                                                                                                        Apply Delay (ms)
+                                                                     0.55     0.55
+                                                           0.48                                                                                                                       10.03           9.75
+                                                                                                                                                                                               9.39
+                                                         0.5                                                                                                                107.31    7.13                    7.16     7.50   7.29    7.45    7.46   7.27
+                                                                                                                                                                                               6.74   6.97
+                                                                                                                      0.28    0.29      0.29     0.31
+                                                                     0.24     0.25      0.27      0.26      0.27
+                                                           0.22
+
+
+
+
+                                                         0.0                                                                                                                  0
+                                                               2        4         6        8         10        12        14       16        18    20                              2    4        6      8       10      12        14      16   18        20
+
+                                                                                                     Target#                                                                                                    Target#
+
+
+                                                                            (a) LogPlayer Delay vs. Target#                                                                                   (b) Apply Delay vs. Target#
+
+
+                                                                            Figure 9: The effect of number of targets on the LogPlayer and apply delay
+
+
+                                                        P25th                P50th               P75th                   P99th          Average                            P25th              P50th          P75th               P99th        Average
+
+                                                         1.0                                                                                                                20
+
+
+                                                                                                                                                                                                             13.80
+                                                                                                                                        0.66     0.66
+                                                                                                                      0.64    0.63                                                    12.35 12.95 12.75                               12.71
+
+
+
+
+                                LogPlayer Delaty (ms)
+                                                                                                                                                                                                                                                     11.60
+
+
+
+
+                                                                                                                                                        Apply Delay (ms)
+                                                                                                            0.55                                                                                                              10.73
+                                                                                        0.50      0.49                                                                        9.99                                                            9.99
+                                                                              0.45                                                                                                                                     9.22
+                                                         0.5         0.41                                                                                                   10                                                                       7.48
+                                                                                                                                                                             6.70     6.99     7.18   7.06    7.30     6.99   7.20    7.17    6.70
+                                                           0.31                                                                                  0.30
+                                                                                                                      0.26    0.27      0.28
+                                                                                        0.21      0.21      0.23
+                                                                     0.17     0.19
+                                                           0.14
+
+
+
+                                                         0.0                                                                                                                  0
+                                                               1        2         3        4         5         6         7        8         9     10                              1    2        3      4        5       6        7       8     9        10
+
+                                                                                               Write-set size (KB)                                                                                         Write-set size (KB)
+
+
+                                                                     (a) LogPlayer Delay vs. Transaction Size                                                                           (b) Apply Delay vs. Transaction Size
+
+
+                                                                                  Figure 10: The effect of transaction size on LogPlayer and apply delay
+
+
+                                                                     Average                             P99th                                                Specifically, 10 keys can be hosted on at most 10 targets. Thus,
+                         26.0
+                                                                                                                                                              adding more targets while keeping transactions size at 10 keys,
+                                                                                                                    21.75 22.09 21.72
+                                                                                               20.80                                                          does not significantly affect Kafka apply delay that is dominated by
+                                                                            18.48                                                                             the 2PC overhead. For 10 targets, the average apply delay of Kafka
+                                                                                      16.78
+                                                                   15.72
+                         17.3                                                                                                                                 is 45 ms, while the average delay of our system is only 7.16 ms
+
+
+       Apply Delay (s)
+                                                        10.78                                  10.66 11.03 10.91 10.98 11.26
+                                                                                                                                                              which means, on average, our system is more than 4 times faster.
+                                                                            9.74      9.12
+                                                                   8.40                                                                                       The 99th percentile apply delay of Kafka is 61 ms, while it is only
+                                                         6.25
+                          8.7                                                                                                                                 12.47 ms for our system which means, regarding the tail latency,
+                                                                                                                                                              our system is more than 6 times faster.
+                            0.53
+                            0.35
+
+                          0.0
+                                     1                    2         3         4        5         6         7         8        9        10                      7             CONCLUSION
+                                                                                        Target#                                                               In this paper, we presented the design of LogPlayer and our ex-
+                                                                                                                                                              perience in using gRPC asynchronous streaming for delivering
+                                                                                                                                                              transactional mutations written to a log to backend storage shards.
+Figure 11: Large apply delay by the design shown in Figure                                                                                                    We model checked the correctness of LogPlayer using TLA+. Specif-
+8 with two levels of Kafka topics                                                                                                                             ically, we proved LogPlayer is masking fault-tolerant for satisfying
+                                                                                                                                                              in-order exactly-once delivery of the log entries to the storage
+                                                                                                                                                              shards. TLA+ helped us find several bugs in our initial design that
+remains constant. That is due to the transaction size which is 10.                                                                                            are fixed in the algorithms provided in this paper. We explained
+Conference’17, July 2017, Washington, DC, USA                                                                                         Mohammad Roohitavaf, Kun Ren, Guogen Zhang, and Sami Ben-Romdhane
+
+
+
+                                                Avg. LogStore-LogPlayer             Avg. Kafka                                                   Avg. LogStore-LogPlayer              Avg. Kafka
+                                            P99th LogStore-LogPlayer                   P99th Kafka                                           P99th LogStore-LogPlayer                    P99th Kafka
+
+                                   25                                                                                               25
+
+                                   20                                                                                               20
+
+
+
+
+                Apply Delay (ms)                                                                                 Apply Delay (ms)
+                                   15                                                                                               15
+
+                                   10                                                                                               10
+
+                                    5                                                                                                5
+
+                                    0                                                                                                0
+                                        2       4      6       8       10    12      14    16        18   20                             1       2      3       4        5      6         7    8       9    10
+
+                                                                        Target#                                                                                     Write-set size (KB)
+
+
+                                                      (a) Apply Delay vs. Target#                                                                (b) Apply Delay vs. Transaction Size
+
+
+   Figure 12: Comparison with Kafka without exactly-once guarantee for different transaction sizes and number of targets
+
+
+                                                Avg. LogStore-LogPlayer             Avg. Kafka                                                   Avg. LogStore-LogPlayer              Avg. Kafka
+                                            P99th LogStore-LogPlayer                   P99th Kafka                                           P99th LogStore-LogPlayer                    P99th Kafka
+
+                                   90                                                                                               90
+
+
+
+
+                Apply Delay (ms)                                                                                 Apply Delay (ms)
+                                                      45.16           45.00 46.19 46.09 45.79 46.30 45.63                                                                              45.90 46.52 47.12
+                                              40.53           41.23                                                                                            42.31 42.07 42.89 44.36
+                                                                                                                                                       38.98
+                                   45
+                                    31.70                                                                                           45     31.68
+                                                                                                                                     26.50
+
+
+                                    7.31       7.13   6.74    6.97    7.16   7.50   7.29   7.45   7.46    7.27                       6.70       6.99   7.18    7.06    7.30   6.99    7.20    7.17   6.70   7.48
+
+
+                                    0                                                                                                0
+                                        2       4      6       8       10    12      14    16        18   20                             1       2      3       4        5      6         7    8       9    10
+
+                                                                        Target#                                                                                     Write-set size (KB)
+
+
+                                                      (a) Apply Delay vs. Target#                                                                (b) Apply Delay vs. Transaction Size
+
+
+     Figure 13: Comparison with Kafka with exactly-once guarantee for different transaction sizes and number of targets
+
+
+how LogPlayer can be configured with LogStore for a distributed                                                              (TOCS) 3, 1 (1985), 63–75.
+database architecture. Our experimental results with the C++ imple-                                                      [7] Confluent Tech Blog. 2019. Transactions in Apache Kafka. https://www.confluent.
+                                                                                                                             io/blog/transactions-apache-kafka/.
+mentation of the LogPlayer shows our design with gRPC asynchro-                                                          [8] Fauna. 2019. Fauna Homepage. https://fauna.com/.
+nous streaming provides efficient delivery of transactions to the                                                        [9] Jim Gray and Andreas Reuter. 1992. Transaction processing: concepts and tech-
+                                                                                                                             niques. Elsevier.
+storage shards. In all of our experiments, the median and average                                                       [10] gRPC. 2019. gRPC Homepage. (2019). https://grpc.io/.
+LogPlayer delay remained less than 1 millisecond. We showed that                                                        [11] JanusGraph. 2019. JanusGraph Homepage. https://janusgraph.org/.
+our system is significantly more efficient than existing streaming                                                      [12] Martin Kleppmann. 2017. Designing data-intensive applications: The big ideas
+                                                                                                                             behind reliable, scalable, and maintainable systems. " O’Reilly Media, Inc.".
+platforms such as Apache Kafka for designing a WAL system with                                                          [13] Leslie Lamport. 2019. TLA+. https://lamport.azurewebsites.net/tla/tla.html.
+the exactly-once guarantee.                                                                                             [14] NuRaft. 2019. NuRaft Github Repository. https://github.com/eBay/NuRaft.
+                                                                                                                        [15] Diego Ongaro and John Ousterhout. 2014. In search of an understandable consen-
+                                                                                                                             sus algorithm. In 2014 {USENIX } Annual Technical Conference ( {USENIX } {ATC }
+REFERENCES                                                                                                                   14). 305–319.
+ [1] Jung-Sang Ahn, Woon-Hak Kang, Kun Ren, Guogen Zhang, and Sami Ben-                                                 [16] Kun Ren, Dennis Li, and Daniel J Abadi. 2019. SLOG: serializable, low-latency,
+     Romdhane. 2019. Designing an efficient replicated log store with consensus                                              geo-replicated transactions. Proceedings of the VLDB Endowment 12, 11 (2019),
+     protocol. In 11th {USENIX } Workshop on Hot Topics in Cloud Computing (Hot-                                             1747–1761.
+     Cloud 19).                                                                                                         [17] Alexander Thomson, Thaddeus Diamond, Shu-Chun Weng, Kun Ren, Philip Shao,
+ [2] B. Alpern and F. B. Schneider. 1985. Defining liveness. Inform. Process. Lett. 21                                       and Daniel J Abadi. 2012. Calvin: fast distributed transactions for partitioned data-
+     (1985), 181–185.                                                                                                        base systems. In Proceedings of the 2012 ACM SIGMOD International Conference
+ [3] Apache Flink. 2019. Apache Flink Homepage. https://flink.apache.org/.                                                   on Management of Data. ACM, 1–12.
+ [4] Apache Kafka. 2019. Apache Kafka Homepage. https://kafka.apache.org/.                                              [18] Guogen Zhang, Kun Ren, Jung-Sang Ahn, and Sami Ben-Romdhane. 2019. GRIT:
+ [5] A. Arora and M. G. Gouda. 1993. Closure and Convergence: A Foundation of                                                Consistent Distributed Transactions Across Polyglot Microservices with Multiple
+     Fault-Tolerant Computing. IEEE Trans. Software Eng. 19, 11 (1993), 1015–1027.                                           Databases. In 2019 IEEE 35th International Conference on Data Engineering (ICDE).
+ [6] K Mani Chandy and Leslie Lamport. 1985. Distributed snapshots: Determining                                              IEEE, 2024–2027.
+     global states of distributed systems. ACM Transactions on Computer Systems
+

@@ -1,0 +1,791 @@
+                                           Delivery, consistency, and determinism: rethinking
+                                              guarantees in distributed stream processing
+                                                1st Artem Trofimov            2nd Igor E. Kuralenok             3rd Nikita Marshalkin              4th Boris Novikov
+                                                 JetBrains Research                   Yandex                              VK                  National Research University
+                                              Saint Petersburg, Russia        Saint Petersburg, Russia          Saint Petersburg, Russia      Higher School of Economics
+                                            trofimov9artem@gmail.com           solar@yandex-team.ru            n.marshalkin@corp.vk.com         Saint Petersburg, Russia
+                                                                                                                                                   borisnov@acm.org
+
+
+                                            Abstract—Consistency requirements for state-of-the-art stream       notions are seemingly simple but shadow the dependency of
+
+
+
+
+arXiv:1907.06250v1 [cs.DB] 14 Jul 2019
+                                         processing systems are defined in terms of delivery guarantees.        an output item on the system state as well as on the input
+                                         Exactly-once is the strongest one and the most desirable for end-      item. Streaming systems face a need to recover computations
+                                         user. However, there are several issues regarding this concept.
+                                         Commonly used techniques that enforce exactly-once produce             consistently with previous input data, the current system state,
+                                         significant performance overhead. Besides, the notion of exactly-      and with the already delivered elements. This requirement
+                                         once is not formally defined and does not capture all properties       makes failure recovery mechanisms somewhat complicated.
+                                         that provide stream processing systems supporting this guaran-            This complication is resolved by most of the existing stream
+                                         tee. In this paper, we introduce a formal framework that allows us     processing engines. Flink ensures the atomicity of state up-
+                                         to define streaming guarantees more regularly. We demonstrate
+                                         that the properties of delivery, consistency, and determinism are      dates and delivery using a protocol based on distributed trans-
+                                         tightly connected within distributed stream processing. We also        actions. Google MillWheel [10] enforces consistency between
+                                         show that having lightweight determinism, it is possible to provide    state and output elements by writing results of each operation
+                                         exactly-once with almost no performance overhead. Experiments          to persistent external storage. Micro-batching engines like
+                                         show that the proposed approach can significantly outperform           Storm Trident [11] and Spark Streaming [9] process data in
+                                         alternative industrial solutions.
+                                                                                                                small-sized blocks. Each block is atomically processed on
+                                                                I. I NTRODUCTION                                each stage of a data flow, providing properties similar to
+                                                                                                                batch processing. The price for exactly-once delivery is a high
+                                            Distributed batch processing systems, such as Google’s              latency observed in these implementations (e.g., [12], [13]).
+                                         MapReduce [1], Apache Hadoop [2], and Apache Spark [3],                   The vast gap between the notion of exactly-once and the
+                                         address a need to process vast amounts of data (e.g., Internet-        properties of its implementations indicates the lack of formal-
+                                         scale). The basic idea behind them is to independently process         ization. Misunderstandings of streaming delivery guarantees
+                                         large data blocks (batches) that are collected from static             frequently cause debates and discussions [14], [15]. Without a
+                                         datasets. The main advantages of these systems are fault               formal model, it is hard to observe similarities and distinctions
+                                         tolerance and scalability [4] of massively parallel computations       between existing solutions and to recognize their limitations.
+                                         on commodity hardware.                                                 In this work, we introduce a formal model of stream process-
+                                            However, there are plenty of scenarios where processing             ing that captures delivery guarantees existing in most of the
+                                         results are most valuable at the time of data arrival, for             state-of-the-art systems.
+                                         example, IoT, news processing, financial analysis, anti-fraud,            Another property that can be easily obtained in batch
+                                         network monitoring, etc. Such problems cannot be directly              processing systems but is hard to achieve in streaming engines
+                                         addressed by classical MapReduce [5]. State-of-the-art stream          is a determinism. The determinism means that repeated runs
+                                         processing systems, such as Flink [6], Samza [7], Storm                of the system on the same data produce the same results.
+                                         [8], Spark Streaming [9], provide a computational model                It is commonly considered as a challenging task [16]. On
+                                         addressing these needs.                                                the other hand, this property is desirable because it implies
+                                            One of the most challenging tasks for streaming systems is          reproducibility and predictability. Intuitively, determinism is
+                                         to provide guarantees for data processing. Streaming systems           connected with delivery guarantees [17], but, to the best of
+                                         must release output elements before processing has finished            our knowledge, this relation has not been deeply investigated.
+                                         because input data is assumed to be unbounded.                            In this work, we demonstrate that the property of deter-
+                                            In distributed stream processing, consistency is usually            minism can mitigate an overhead on exactly-once. In order to
+                                         described in terms of delivery guarantees: at-most-once, at-           prove the feasibility of efficient exactly-once over determin-
+                                         least-once, and exactly-once [6]. These guarantees describe a          ism, we introduce fault tolerance protocols on top of drifting
+                                         contract regarding which data will be processed and released           state model [18]. We show that lightweight determinism,
+                                         in case of failures. Exactly-once is the strongest and the most        together with the results of the formal inference provides for
+                                         valuable guarantee from the user perspective as it ensures that        exactly-once for a negligible cost.
+                                         input elements are processed atomically and are not lost. These           The contributions of this paper are the following:
+  •  Formal model of a distributed stream processing and a          after a failure. A straightforward approach to restoring the
+     definition of delivery guarantees                              state is to replay missing input elements. However, these
+   • Demonstration that in non-deterministic systems pro-           elements can be reordered in an asynchronous distributed
+     viding exactly-once, the lower bound of latency is the         environment, potentially affecting the concatenation of input
+     duration of state snapshotting                                 items processed exactly-once but inconsistent with output
+   • Techniques for lightweight implementation of exactly-          released before the failure. For example, if input elements are
+     once guarantee on top of a deterministic engine                strings ”a”, ”b”, ”c”, and user have already received ”a” and
+   • Study of the practical feasibility of the proposed ap-         ”ab”, it is expected that the current state is ”ab”, and the next
+     proaches                                                       output element is ”abc”. However, after recovery and state
+   The rest of the paper is structured as follows: in section II    reprocessing, the current state can become ”ba” due to races.
+the notion of consistency applied to a stream processing            In this case, the next output element ”bac” will be inconsistent
+is discussed, we introduce our formal framework in sec-             with the previously delivered elements ”a” and ”ab”.
+tion III, existing implementations of exactly-once in terms of         In real-life applications, concatenation can be faced in user
+the proposed formal framework are described in section IV,          behavior analysis, where the most recent actions are stored.
+implementation details of exactly-once over determinism are         This simple example illustrates that straightforward definitions
+mentioned in section V, experiments that demonstrate the            of delivery guarantees are not sufficient to provide output
+feasibility of the proposed concept are detailed in section VI,     consistency. While the state snapshotting protocol for dis-
+and we discuss prior works on the topic in section VII.             tributed systems [20] was adopted for streaming systems [21],
+                                                                    to the best of our knowledge, there are no formal definitions
+                       II. M OTIVATION                              of delivery guarantees and consistent results. In the next
+   The concept of consistency is traditionally expressed in         section, we introduce a formal framework that allows us to
+terms of the transactional behavior, known as the ACID              define delivery guarantees with aware of the system state, data
+properties of transactions in the databases. These properties       producers, and data consumers. We also reveal an approach to
+ensure that the (database) state is consistent to the degree        exactly-once implementation with low performance overhead.
+required by the specified isolation level, providing consistency       =
+of processing. However, database systems are not used stan-
+dalone: they interact with client applications. From the client                         III. F ORMAL M ODEL
+perspective, the notion of consistency also includes delivery          In this section, we introduce a formal model of a distributed
+guarantees as well. At-least-once ensures that input data are       stream processing system. After that, we define the notions of
+not lost, at-most-once eliminates duplicate processing, and         delivery guarantees in a regular way. We demonstrate that in
+exactly-once combines both ensuring the absence of input data       a general case, non-deterministic systems must save results
+losses and repeated delivery of results. An implementation          of non-commutative operations before output delivery. It is
+of exactly-once processing of transactions based on persistent      illustrated how state-of-the-art stream processing systems fit
+queues is described in [19].                                        the requirements that we formulate.
+   Delivery guarantees are typically not considered in batch
+processing systems, because they always ensure atomicity            A. Preliminaries
+between reading input data, processing, and delivery of results.       A distributed stream processing system is a shared-nothing
+In other words, it means that each record within a batch            distributed runtime, that can handle a potentially infinite
+is processed exactly-once. This is achieved by consecutive          sequence of input items. Each item can be transformed several
+processing of batches, persistent storage for all intermediate      times before the final result is released from the system. Output
+results, and reprocessing of all suspected failures. A disadvan-    elements may depend on multiple input ones. Elements can be
+tage of this approach is the impossibility to deliver any results   processed one-by-one or grouped into small input sets, usually
+while the processing is not complete.                               called micro-batches.
+   In contrast, consistency guarantees for stream processing           A user specifies required stream processing with a logical
+systems are commonly declared in terms of delivery only.            graph. Vertices of this graph represent operations and edges
+A pitfall here is that terms like exactly-once and at-least-        determine the data flow between tasks. A processing system
+once hide the fact that system state must also be consistent        maps the logical graph to a physical graph that is used to
+with input and output in order to achieve correct results. In       control actual distributed execution. Commonly, each logical
+the absence of formal definitions, such terms can lead to an        operation is mapped to several physical tasks that are deployed
+improper perception that the state does not play an essential       to a cluster of computational units connected through a net-
+role in consistency enforcement.                                    work. Each operation may be stateless or stateful. A system is
+   The problem shows up if some streaming elements do               usually responsible for state management in order to prevent
+not commutate within an operation in a data flow. Let us            inconsistencies.
+consider a data flow with an operation that concatenates               An input element has entered if the system is aware of this
+input strings and delivers it after each item. The system must      element since that moment and takes some responsibility for
+restore its state (a concatenation of strings in this example)      its processing. This concept can be implemented differently.
+For example, an element has been entered when it has arrived          Data producers and consumers are modeled using sets A and
+at Source vertex in Flink, while an element enters, when it is     B, respectively. All elements that in the system at the time τ
+read or received by an input agent also called Source in Spark     are also presented in the set Wτ . We assume that operation
+Streaming.                                                         states are common elements that are presented in Wτ as well.
+   An output element has left the system if the element has        Binary relation D captures all possible transformations within
+been released to a consumer. Since that time, the system cannot    a physical graph. Input step indicates that a new streaming
+observe it anymore. This concept can also be implemented dif-      element enters the system. This element is also presented in
+ferently in various systems. For instance, in Spark Streaming      set A, because the system may request it for reprocessing.
+element leaves when it is pushed to output operation, e.g.,        Output step describes a case, when an element leaves the
+written to HDFS or file. In Flink, an element is delivered to      system, e.g., during delivery of an output element to a data
+end-user when it leaves from Sink vertex.                          consumer. Transform step denotes the internal transformation
+   It is important to note that input and output elements          of an element according to user-defined operations. In this
+cannot be directly matched due to the possibility of complex       model, we do not explicitly introduce computational units and
+transformations within the system. For instance, a single input    asynchronous network channels. Instead, we simulate possible
+element can be transformed into multiple ones. The resulting       races and distributed asynchronous processing through the
+elements may be processed in entirely different ways and even      probability of the next transformation inside a data flow. Such
+influence each other. In general, it is hard to find out input     probability is modeled using a random variable χτ , which
+elements on which an output element depends.                       indicates the input of an operation that will be executed next.
+B. Distributed streaming model                                     Failure and recover step indicates the recovery of the system
+                                                                   state based on input and output elements.
+   A formalization of streaming consistency guarantees we
+                                                                      We allow using output elements in system transformations
+begin with a regular definition of a stream processing system.
+                                                                   because we suppose that snapshots of operation states taken by
+In order to be sufficient for the formalization, such a model
+                                                                   real stream processing systems are common output elements.
+should cover user-defined transformations, system state, data
+                                                                   The rationale for this assumption is the following:
+producers, and data consumers.
+   Index τ ∈ N can be considered as an exact global discrete         • Snapshots should be considered as an output as they are
+time. We assume that only one event can happen at any single           usually stored in external systems, (such as in HDFS,
+point in time τ .                                                      Kafka, relational databases) and are read back during
+                                                                       recovery.
+Definition 1. Stream processing system is a tuple of
+                                                                     • Stream processing systems aim at minimizing informa-
+(Γ, D, F ), where Γ is a set of all possible data flow elements,
+                                                                       tion which is needed to recover processing, but their
+D ⊆ 2Γ × 2Γ is a binary relation on its power set. F is
+                                                                       optimizations do not directly affect consistency. The
+a recovery function that restores the working set in case of
+                                                                       notion of F (Aτ , Bτ ) makes our concept general enough
+system failures. Computations within the system are defined
+                                                                       to describe any streaming engine while being independent
+by the recurrent rules on the set of input elements A, output
+                                                                       of a specific implementation of F .
+elements B, and the transient working set W . On each
+iteration, one of the following steps is chosen:                      Let us illustrate the proposed model by an example. Assume
+   1) Input aτ ∈ Γ:                                                that a physical graph consists of a single windowed oper-
+       Aτ +1 = Aτ ∪ {aτ },                                         ation (window = 2) that concatenates strings from multiple
+       Bτ +1 = Bτ ,                                                asynchronous input channels. This graph is illustrated in
+       Wτ +1 = Wτ ∪ {aτ }.
+   2) Output bτ ∈ Wτ :
+                                                                                                  TABLE I
+       Aτ +1 = Aτ ,                                                                N OTATIONS USED THROUGHOUT THE PAPER
+       Bτ +1 = Bτ ∪ {bτ },
+       Wτ +1 = Wτ \ {bτ }.                                          Γ                           The set of all possible data flow elements
+                                                                    D ⊆ 2Γ × 2Γ                 Binary relation that captures user-defined
+   3) Transform                                                                                 operations
+       Aτ +1 = Aτ ,                                                 ClD                         Transitive closure of D
+                                                                       −1
+       Bτ +1 = Bτ ,                                                 ClD                         Inversed transitive closure of D
+       Wτ +1 = (Wτ \ χτ ) ∪ Yτ , (χτ , Yτ ) ∈ D,                    τ ∈N                        Exact global discrete time
+                                                                    aτ ∈ Γ                      Input element at the time τ
+       where                                                        Aτ ⊆ Γ                      All input elements by the time τ
+       χτ ∼ P (X | X ⊆ Wτ ∪ Bτ , ∃Y : (X, Y ) ∈ D),                 bτ ∈ 2Γ                     Output element at the time τ
+       probability distribution of χτ depends on a system           Bτ ⊆ 2Γ                     All output elements by the time τ
+       architecture.                                                Wτ ⊆ 2Γ                     Working set at the time τ
+   4) Failure and recover                                           F                           Recovery function
+                                                                    F∗                          Reference recovery function
+       Aτ +1 = Aτ ,                                                 P (bτ +1 |Aτ , Bτ , F )     Probability of output element
+       Bτ +1 = Bτ ,                                                 P (bτ +1 |Aτ , Bτ , F ∗ )   Probability of output element in a system
+       Wτ +1 = F (Aτ , Bτ )                                                                     with a reference recovery function
+Figure 1: x ∈ W indicates input channels, y ∈ W denotes            in this model contains processes states and channel states,
+output channel, and s ∈ W is the state of the operation.           e.g., elements, which are in-flight at the moment. Distributed
+Set Γ contains all possible characters, and binary relation D      asynchronous processing is simulated using permutations of
+contains all possible options for their concatenation. Recovery    events.
+function F reprocess all input elements since the last snapshot.      The proposed model is a variation of a classical Chandy-
+Table II demonstrates a potential execution of the defined         Lamport distributed system model with the following proper-
+graph with strings ”a”, ”c”, ”b”, ”d”, ”e” as input elements.      ties and modifications:
+The concatenation operation receives a random element from            • Our notion of a streaming system does not provide
+its input due to asynchronous channels. Wall time is indicated           a concept of operations state because, as it is shown
+to highlight that races may occur in a data flow. Note that step         in [18], states can be considered as common data items.
+snapshot can be considered as an ordinary output step. Red               In this case, a state element is presented in a system
+lines emphasize the recovery process after failure.                      until it is transformed into a new state together with
+   As one can see, the system reaches precisely the same state           new elements. This model allows a binary relation D to
+after recovery. Eventually, the end-user receives the output             capture computations within a graph of processes that is
+element be that is expected within such execution. Further, we           a physical streaming execution graph in our case. Hence,
+demonstrate that simple reprocessing of missed input elements            the working set Wτ is a global state with only channel
+can cause significant inconsistencies in results.                        states in terms of Chandy-Lamport.
+                                                                      • Input and output elements aτ and bτ are special events.
+
+                 x                               y                       This way, storage and computations are distinguished. We
+                              Concatenation                              assume that output elements Bτ are all data that leaves
+   A                               s                        B            a system including so-called state snapshots which are
+                                                                         typically used for recovery [22]. Because of this, we state
+                                                                         that X ⊆ Wτ ∪ Bτ in the transform transition of the
+             Fig. 1. Strings concatenation physical graph                working set. In most state-of-the-art stream processing
+                                                                         systems, the end-user is external to the system, i.e., a
+                                                                         user can observe input and output elements, but not the
+                            TABLE II                                     working set.
+                S TRING CONCATENATION DATA FLOW                       • Distributed asynchronous computations are modeled
+       wall                                                              through the random choice of an operation that is ex-
+       time τ a ∈ A x ∈ W s ∈ W y ∈ W b ∈ B      step                    ecuted next. In the proposed model, instead of using per-
+         1 1    a      a                        input                    mutations of data flow elements that fixate an execution
+         1 2    c     a,c                       input
+         1 3           c    [a]    a         transform                   route, we suppose that the next transition of the working
+         1 4           c    [a]          a     output                    set is a random variable. The distribution of this variable
+         1 5               [a,c]  ac         transform                   depends on system architecture.
+         1 6               [a,c]        ac     output
+         1 7               [a,c]       [a,c] snapshot
+         2 8    b      b   [a,c]                input
+                                                                   D. Consistency
+         2 9    d     b,d  [a,c]                input                 The parallel asynchronous nature of distributed stream pro-
+         2 10          b   [c,d]  cd         transform
+         2 11          b   [c,d]        cd     output
+                                                                   cessing allows us to handle only a probability of an output
+         2 12              [d,b]  db         transform             element because it can be different from run to run due to
+         2 13              [d,b]        db     output              element reorderings.
+         3 14              [a,c]              recovery
+         3 14   b      b   [a,c]                                   Definition        2.    Probability  of    output  element
+         3 14   d     b,d  [a,c]
+         3 14          b   [c,d]
+                                                                   P (bτ +1 |Aτ , Bτ , F ) is a probability to observe output
+         3 14          b   [c,d]                                   element bτ +1 considering all previous input and output
+         3 14              [d,b]                                   elements, and recovery function.
+         3 14              [d,b]
+         4 15   e      e   [d,b]                input                 The problem here is that it is hard to define the correct
+         4 16              [b,e]  be         transform
+         4 17              [b,e]        be     output
+                                                                   output, because it may significantly vary. Inconsistencies may
+                                                                   arise only in case of failure and incorrect recovery. Let us
+                                                                   introduce a reference recovery function that allows us to
+                                                                   denote results which are possible to reach without failures.
+C. Model analysis
+                                                                   Definition 3. Reference F ∗ is a recovery function that re-
+   In a classical model proposed by Chandy and Lamport [20],
+                                                                   stores exactly the same working set as before the failure,
+a distributed system is represented as a graph of processes,
+                                                                   ∀τ ∈ N, F ∗ (Aτ , Bτ ) = Wτ .
+which can be connected via channels. Each process can own
+a modifiable internal state, generate events and send them         Definition 4. Probability of output element with a reference
+to other processes through the channels. Global system state       recovery function P (bτ +1 |Aτ , Bτ , F ∗ ) is a probability to
+observe output element bτ +1 considering all previous input         flow contains races and some elements do not commute, output
+and output elements, and a reference recovery function.             consistency will be preserved. Looking back to the example
+                                                                    illustrated in Table II, our formal definition of exactly-once
+  Using the notion of a reference recovery function, one can
+                                                                    ensures that after recovery system reaches state [d, b], not [b, d],
+define the correct output.
+                                                                    because this state has already influenced output elements.
+Definition 5. Output element bτ +1 is consistent with all pre-         At-most-once and at-least-once guarantees are the relax-
+vious input and output elements Aτ and Bτ if the probability        ations of exactly-once. The results within these guarantees
+to observe it is non-zero in a system with reference recovery:      can be obtained without failures, but with the modification
+P (bτ +1 | Aτ , Bτ , F ∗ ) > 0.                                     of the input. At-least-once can be reproduced if the input
+                                                                    contains duplicated items. At-most-once can be achieved with
+   The reference recovery function allows us to express the         a reference recovery if some input elements are missed. It
+notion of correct execution in terms of correspondence be-          is important to note, that regarding at-most-once guarantee
+tween input and output elements. In most real cases, input          we require an input element to be processed atomically with
+and output elements are the only data that can be observed          all its derivatives or not processed at all. To the best of our
+by the end-user. In real distributed stream processing systems,     knowledge, none of the stream processing engines supports
+failures and recoveries can corrupt the output, despite the fact,   at-most-once guarantee, so we cannot verify the relevancy of
+that in terms of a simple definition of delivery guarantees, all    this assumption. It is accessible to provide at-most-once by
+elements are processed exactly-once.                                producing no output at all, but if the output is presented, at-
+   The problem here is that elements can be concatenated in         most-once enforcement becomes much more difficult.
+a different order on recovery. Let us demonstrate it by the            In our formal model, the relaxations of exactly-once are
+already mentioned example demonstrated in Figure 1 and Ta-          defined without diving into recovery mechanisms. Instead,
+ble II. During recovery system may reach concatenation state        they are described through possible input channel flaws in
+s = [b, d] at τ = 15 rather than s = [d, b] due to asynchronous     a system with a reference recovery. This trick allows us to
+input. In this case, output at τ = 17 becomes de instead of be.     represent invisible system details in terms clear for an external
+However, de is inconsistent with the previous output, because       user.
+element with prefix d has already been released at τ = 13. It is
+important to note that all input elements within the example        F. Exactly-once and determinism
+are applied to concatenation state exactly-once. This simple           Operations that are presented in D can directly affect
+example demonstrates that informal definition of exactly-once       the complexity of consistency enforcement mechanisms. For
+does not guarantee the consistency of output elements.              example, if all operations are idempotent, exactly-once can
+                                                                    be achieved [10]. Among common types of operations, non-
+E. Delivery guarantees
+                                                                    commutative ones provide significant difficulties in achieving
+   As we demonstrate further, state-of-the-art stream process-      exactly-once.
+ing systems prevent inconsistencies illustrated in the example
+above. However, the informal definition of exactly-once is          Definition 9. D contains non-commutative operation if
+insufficient to describe the level of data consistency that is      ∃(x, y), s1 , s2 ∈ Γ, s1 6= s2 :
+provided. Here we introduce regular definitions of delivery         ((x, y), s1 ) ∈ D,
+guarantees which take this issue into account.                      ((y, x), s1 ) ∈
+                                                                                  / D,
+                                                                    ((y, x), s2 ) ∈ D.
+Definition 6. System provides for exactly-once if it is possible
+                                                                       The are many non-commutative operations that are com-
+to obtain each output element bτ +1 in a system with a
+                                                                    monly used in practice: concatenation, matrix multiplication,
+reference recovery fucntion, i.e.,
+                                                                    cross product, etc. Hence, general-purpose stream processing
+∀τ ∈ N, bτ +1 ∈ 2Γ : P (bτ +1 |Aτ , Bτ , F ) > 0 ⇒
+                                                                    systems should support them. The problem with such opera-
+P (bτ +1 |Aτ , Bτ , F ∗ ) > 0.
+                                                                    tions we demonstrated above: simple reprocessing of missing
+Definition 7. System provides for at-most-once if                   elements in case of failure may lead to results inconsistencies.
+∃A0τ ⊆ Aτ such that
+                                                                    Definition 10. System is deterministic if
+∀τ ∈ N, bτ +1 ∈ 2Γ : P (bτ +1 |Aτ , Bτ , F ) > 0 ⇒
+                                                                    ∀τ ∈ N, bτ +1 ∈ 2Γ : P (bτ +1 |Aτ , Bτ , F ∗ ) = 1.
+P (bτ +1 |A0τ , Bτ , F ∗ ) > 0.
+                                                                       An essential property of a deterministic system is that it
+Definition 8. System provides for at-least-once if
+                                                                    preserves the same order of elements before non-commutative
+∃A∗τ ⊆ 2Aτ such that
+                                                                    operations on each run. We further demonstrate how this prop-
+∀τ ∈ N, bτ +1 ∈ 2Γ : P (bτ +1 |Aτ , Bτ , F ) > 0 ⇒
+                                                                    erty can be used to achieve exactly-once with low performance
+P (bτ +1 |A∗τ , Bτ , F ∗ ) > 0.
+                                                                    overhead.
+  Exactly-once states that observed results cannot be distin-          On the other hand, the absence of determinism imposes
+guished from one of the possible results produced by a system       restrictions on exactly-once implementations. The follow-
+with a reference recovery function. It means that even if data      ing theorem denotes the necessary and sufficient conditions
+for exactly-once in non-deterministic systems with a non-        F (aτ , bτ1 ) = bτ2 and bτ1 , bτ2 ∈ ClD (s) after recovery, thus
+commutative operation in D. It demonstrates that if a system     P (bτ2 ∈ ClD (s)|{aτ }, {bτ1 ∈ ClD (s)}) > 0.
+is non-deterministic, but supports non-commutative operations,
+it must save (take a snapshot of) results of non-commutative        We assume in this theorem that input element aτ is split
+operations before delivery of output elements that depend on     into elements x, y. The same behavior can be reproduced
+these results.                                                   if two input elements aτ and aτ +1 enter a system through
+                                                                 asynchronous channels. In general, this behavior is natural
+                                                                 for stream processing systems because elements are processed
+                                                                 one-by-one without synchronization and order enforcement.
+                                                                    This theorem has direct practical implications for non-
+                                                                 deterministic systems:
+                                                                    • Output elements must wait until the snapshot is
+                                                                       taken. If a system aims at providing exactly-once, it
+                                                                       must output elements only if there exists a snapshot
+                                                                       that contains results of non-commutative operations. The
+                                                                       problem here is that a system is usually not aware of user-
+                 Fig. 2. The scheme of Theorem 1                       defined operations and cannot distinguish commutative
+                                                                       and non-commutative operations, so it must wait even if
+Theorem 1. If D contains non-commutative transformation                all elements commutate.
+                                                                    • Latency is affected by the period of snapshotting.
+and has the following dependencies for some aτ ∈ Γ:
+                                                                       The consideration above implies that the lower bound
+   (i) x ∈ ClD (aτ ), y ∈ ClD (aτ )
+                                                                       of latency in the worst case in non-deterministic systems
+  (ii) ((x, y), s) ∈ D through a non-commutative operation
+                                                                       is the snapshotting period, together with the duration of
+ (iii) bτ1 , bτ2 ∈ ClD (s), τ1 < τ2
+                                                                       taking a snapshot. There is a trade-off between latency
+then non-deterministic system supports exactly-once if and             and the frequency of taking snapshots because too fre-
+only if:                                                               quent snapshotting can cause high extra load, while rare
+                                    −1
+                  G = ClD (bτ1 ) ∩ CD  (bτ2 )                          snapshots lead to high latency.
+                                                           (1)      It is important to note that the proposed model is suitable
+         ∀(u, v) ∈ D, u ∈ ClD (s) : v ⊂ G ⇒ u ⊂ G
+                                                                 not only for the formal analysis of the properties of exactly-
+Proof Sketch.                                                    once but for a deeper understanding of the other aspects of
+                                                                 stream processing. While these topics are promising as well,
+   The scheme of the theorem is shown in Figure 2. The           they are out of the scope of this paper.
+theorem conditions mean that each result of the non-
+commutative operation must become recoverable before the                   IV. E XACTLY- ONCE IMPLEMENTATIONS
+delivery of output that depends on this result.
+                                                                 A. MillWheel
+Necessary condition                                                 The Γ is all possible streaming records. Dependency relation
+                                                                 D is defined using a graph of user-defined transformations. To
+   Assume that conditions 1 are not satisfied, i.e.              ensure fault tolerance, MillWheel employs a strong produc-
+∃v ⊂ G, u 6⊂ G : (u, v) ∈ D, and system fails at                 tions [10] mechanism that stores persistently input and output
+time τ1 < τf < τ2 . Then, to obtain bτ2 there is a need          of operation for each new input item. Thus each streaming
+to recompute v, u and therefore s. However, due to               element is saved before it may influence other elements or
+asynchronous distributed processing and non-commutative          operation states. Recovery function F resends all saved records
+transformation, system can reach not exactly s such that         in case of failure, and each operation deduplicates input that
+((x, y), s) ∈ D, but s0 : ((y, x), s0 ) ∈ D. In this case,       has been already processed.
+after recovery element bτ2 will be delivered, but it will           The necessary condition of exactly-once from Theorem 1
+depend not on s, but on s0 : bτ2 ∈ ClD (s0 ). This is a          claims that each element s ∈ Γ obtained through a non-
+contradiction, because bτ has been already delivered and         commutative operation must be persistently saved before any
+P (bτ2 ∈ ClD (s0 )|{aτ }, {bτ1 ∈ ClD (s)}) = 0.                  other element bτ ∈ ClD (s) that depends on s is released.
+                                                                 Strong productions mechanism ensures that this condition is
+Sufficient condition                                             satisfied, i.e., if some element bτ is released, it is guaranteed
+                                                                 that its dependencies were released earlier (saved to persistent
+  Let us assume that a system fails at time τf . If τf < τ1      storage). The idea of this method is shown in Figure 3. It
+or τf > τ2 , exactly-once is obviously satisfied. Assume that    demonstrates that in MillWheel, all elements become recov-
+τ1 < τf < τ2 . In this case, bτ1 ∈ Bτf ⊂ Bτ2 . Hence, bτ2 can    erable, so there is no need to reprocess them again from an
+be restored directly from bτ1 without reprocessing of s, i.e.    input item in case of failure.
+                                                                   consisting of user operations. Flink periodically saves infor-
+                                                                   mation needed for recovery by injecting particular elements
+                                                                   called checkpoints into the input stream. Intervals between
+                                                                   checkpoints are called epochs. Checkpoints go through the
+                                                                   same network channels as common elements and push all
+                                                                   inverted dependencies of inputs through the system. Each
+                                                                   operation prepares data to save independently at the moment
+                                                                   of checkpoint arrival. Prepared data is committed to external
+                                                                   storage when checkpoint passes through the whole data flow.
+                Fig. 3. Strong productions mechanism
+                                                                   Output elements are delivered to the end-user only after the
+                                                                   commit. Recovery function F reprocesses last non-complete
+                                                                   epochs.
+   Such behavior is also called effective determinism [23]            This mechanism ensures that all elements within an epoch
+because computations become deterministic until the persistent     are processed atomically and all interactions between elements
+storage is cleared. Strong productions method guarantees that      from different epochs are possible only through persistent
+even if many possible results of a non-commutative operation       state. Hence, as it is shown in Figure 4, if two output
+may be obtained due to races, only one of them is computed         elements bτ1 , bτ2 ∈ ClD (s) depend on a single item s, it
+and saved. The price for such exactly-once enforcement is          is guaranteed that τ1 = τ2 . This ensures that the necessary
+an overhead on external writes on each transformation in a         condition of exactly-once from Theorem 1 is satisfied. Such
+physical graph.                                                    a method is quite similar to the micro-batching technique
+                                                                   used in Spark. The differences are: elements are buffered after
+B. Spark streaming                                                 their processing is done and multiple epochs can be processed
+   In Spark, the Γ is a set of all possible small collections of   simultaneously.
+input items called RDD records that are processed atomically.
+                                                                             V. E XACTLY- ONCE OVER DETERMINISM
+Dependency relation on the power set of Γ is also defined
+using a directed acyclic graph of user operations. Spark              In the previous section, we demonstrated how state-of-
+inherits main properties of batch processing systems: each new     the-art stream processing systems handle non-deterministic
+stage of computations is started only after the previous one is    behavior in order to achieve exactly-once. All these systems
+completed and recovery function F starts reprocessing of a         make state recoverable before output elements which depend
+micro-batch from the beginning in case of failure.                 on this state are released. As we demonstrate further, such
+   The condition for exactly-once from Theorem 1 is satisfied      behavior can significantly increase the processing latency of
+because all elements within the micro-batch are released           individual elements.
+atomically. Elements from various micro-batches can interact          The condition from the Theorem 1 can be relaxed for a
+only through persistently stored state. Output elements that are   deterministic system because determinism guarantees order
+ready to be delivered to the end-user must wait until the whole    enforcement before non-commutative operations. If a system
+micro-batch is completely processed. Therefore, if two output      is deterministic, it is possible to recompute states of non-
+elements bτ1 , bτ2 ∈ ClD (s) depend on a single item s, it is      commutative operations consistently. Hence, such a system can
+guaranteed that τ1 = τ2 . The illustration of this behavior is     release an output element before a snapshot is taken because
+shown in Figure 4.                                                 it can reproduce the same state in case of failure. It means that
+                                                                   even if elements are divided into the epochs like in Apache
+                                                                   Flink, and a snapshot is taken once per epoch, ready-to-release
+                                                                   output elements should not wait until the epoch is committed
+                                                                   in order to be delivered. The limitation of this approach is
+                                                                   that only deterministic operations (e.g. without the usage of
+                                                                   random values) are allowed in a data flow.
+                                                                      To combine the determinism with exactly-once we need
+                                                                   to design protocols for recovery function F and saving data
+                                                                   needed for correct restoring. In this section, we describe
+                                                                   protocols for exactly-once enforcement on top of a lightweight
+                                                                   deterministic model for distributed stream processing called
+           Fig. 4. Micro-batching and transactional approach       drifting state [18]. This model is implemented in FlameStream
+                                                                   processing system [24].
+                                                                      In FlameStream computations are deterministic due to a
+C. Flink                                                           (speculative) maintenance of a pre-defined total order on
+   In Flink, the Γ is represented as all StreamRecords. Re-        elements before each order-sensitive operation. The order can
+lation D is defined in the form of a directed acyclic graph        be defined using various methods [25], and we assume that
+                                                                    Coordinator
+                    Data Producers                                                                               Data Consumers
+
+
+                         Socket               Node #1                                                                 Socket
+
+
+
+                                                                                            BARRIER
+                          Apache                                                                                       Apache
+                           Kafka                                                                                        Kafka
+
+
+
+
+                         HDFS                                                                                         HDFS
+                                                   Persistent                 Apache
+                                                    Storage                  ZooKeeper
+
+
+                                     Fig. 5. The overview of an architecture for drifting state implementation
+
+
+                                                                                                   −1
+∀x1 , x2 ∈ Γ, ∃t(x) : x1 < x2 ⇐⇒ t(x1 ) < t(x2 ). In                       {ai } that ∀i, s ∈ ClD     (ai ). Otherwise, it may be unclear,
+order to achieve exactly-once on top of a deterministic stream             which input elements must be reprocessed during recovery.
+processing system we propose the following way:                            In Apache Flink, it is implemented through specific streaming
+   • Periodically save (take a snapshot of) operation states               elements which play the role of notifications that a determined
+   • Consistently restore these states and replay missed input             set of input elements have been processed. In FlameStream
+      elements in case of failure                                          this mechanism is implemented using a modification of Acker
+   • Ensure that output elements which have been already                   agent from Apache Storm [8].
+      released will not be duplicated after recovery and input                Assuming that the mechanism for detection of which input
+      reprocessing                                                         elements influence states is implemented, the protocol of state
+                                                                           snapshotting for Coordinator and nodes is the following:
+   We do not enforce a strict architecture of the system, but
+                                                                              • Coordinator decides that snapshot should be taken and
+assume that there are several functional agents:
+                                                                                 enables a mechanism to detect which input elements have
+   • Coordinator manages snapshotting and recovery.
+                                                                                 been processed since the previous snapshot.
+   • Cluster state manager is used to keep service information
+                                                                              • On the notification, nodes asynchronously make operation
+      for recovery.                                                              states recoverable and send to Coordinator the acceptance
+   • Persistent storage is needed for reliable storing of state
+                                                                                 message.
+      snapshots. In case of failures, the state snapshot is recov-            • When the Coordinator receives all acceptance messages,
+      ered from persistent storage.                                              it saves the information about which input elements
+   • Data producer that can replay some set of previous input
+                                                                                 belong to this snapshot and other service information
+      elements with the same t(a).                                               about the snapshot. In general, it is sufficient to save only
+   • Data consumer that is responsible for output elements
+                                                                                 t(a) of the last input element that affects the snapshot.
+      receiving. The exact requirements for data consumer are
+                                                                              It is worth to note that the proposed protocol is similar to
+      detailed further in this section.
+                                                                           the transactional (variation of 2PC) state snapshotting protocol
+   • Node is an executor of user-defined operations. The
+                                                                           used in Flink [22]. The critical difference is that in our
+      computation can be balanced through the distribution of
+                                                                           method, output releasing agents (barriers) do not take part in a
+      data elements among nodes. Each Node has a barrier that
+                                                                           distributed transaction, because in a deterministic system there
+      delivers output elements to the end-user.
+                                                                           is no need to wait until the snapshot is taken in order to release
+   The implementation of this architecture in FlameStream                  output elements consistently. The scheme of the protocol used
+processing engine is demonstrated in Figure 5. Apache                      in Apache Flink is shown in Figure 6. As it is demonstrated,
+ZooKeeper is used for cluster state management. As persistent              output elements delivery (stage 4) is allowed only after commit
+storage, one can use a distributed file system or database (e.g.,          (stage 3). Modified state snapshotting protocol for a determin-
+HDFS, S3, MongoDB, GFS, HBase, etc.). Data producers may                   istic system is demonstrated in Figure 7. One can note that
+vary as well: the role of t(a) can be played by any monotonic              elements delivery is independent of the snapshotting protocol.
+sequence, e.g., offsets in Kafka.                                          This difference determines the significant latency decrease that
+                                                                           is demonstrated further in experiments.
+A. Snapshotting                                                               2) Last output element: In order to preserve the deter-
+   1) Operation states: In order to periodically save operation            ministic outcome, the Barrier must release output items with
+states, there is a need to determine which input elements                  monotonically increasing t(x). Hence, the Barrier can filter
+affect them. We have to trace reversed dependencies: for each              out any items with t(x) less than or equal to the t(x) of the
+state element s we desire to determine such input elements                 last released item tlast in order to preserve exactly-once after
+                             Coordinator                                    Failure detection can be implemented in different ways [26],
+                                                          Commit         which are out of the scope of this paper. In FlameStream
+     1      Prepare          2       Prepared      3     Commit          it is implemented using Acker [18]. In the case of packet
+                                                                         loss or node failure, a failure detector mechanism can enforce
+         Node #1
+                                                                         the Coordinator to begin computations restart from the last
+                                 BARRIER
+                                                                         successful snapshot. Restart protocol includes the following
+                                                   Output elements
+                                                                     4   steps:
+                                                                            • Coordinator broadcasts a notification to begin the recov-
+
+            Fig. 6. State snapshotting protocol in Apache Flink                ery process.
+                                                                            • Operations receive these notifications and fetch their
+                                                                               states from state storage. After that, they send an ac-
+                             Coordinator
+                                                                               knowledgment that they are ready for Processing to the
+                                                           Commit
+     1      Prepare          2       Prepared      3                           Coordinator.
+                                                                            • Barriers request the last released bundle from data con-
+         Node #1                                                               sumers and send acknowledgments that they are ready
+                                 BARRIER                                       for Processing to the Coordinator.
+           Output elements       Output elements   Output elements          • When the Coordinator receives all acknowledgments
+                                                                               from groupings and barriers, it requests data producer
+                                                                               to replay starting from the t(a) of the last snapshot.
+      Fig. 7. State snapshotting protocol in a deterministic system
+                                                                            The proposed protocol guarantees the following properties
+                                                                         that allow preserving exactly-once:
+recovery. To implement this mechanism, there is a need to                   • Processing does not restart until all operations obtain
+deliver output items and update tlast atomically. To solve this                consistent states. The consistency of these states is guar-
+problem, we require the following output protocol between a                    anteed by the state snapshotting protocol. Therefore, the
+barrier and a data consumer:                                                   elements are not lost.
+   • On each output delivery, Barrier sends a bundle to the                 • Duplicates are not produced because, at the moment when
+
+     data consumer. This bundle contains an output item and                    Processing is restarted, it is ensured that Barrier has
+     tlast . The Consumer must acknowledge that it received                    obtained the last released t(x) and can filter out extra
+     the bundle.                                                               items.
+   • Barrier does not send new output bundle until the previ-
+                                                                                               VI. E XPERIMENTS
+     ous one is not acknowledged.
+   • Consumer must return last received bundle on Barrier’s
+                                                                         A. Setup
+     request.                                                               A series of experiments were performed in order to analyze
+   This protocol guarantees that tlast and released items are            the overall performance of the proposed approach. For exper-
+always consistent with each other. It implies that the Barrier           iments, we use an open-source implementation of the drifting
+can request the last released bundle and fetch tlast after               state model called FlameStream. FlameStream is a distributed
+recovery to avoid duplicates, which can be generated during              stream processing engine implemented in Java using Akka
+input elements reprocessing.                                             framework. FlameStream can be deployed on a hardware
+   Thus, on the one hand, we delegate the part of the basic              cluster of computational units that we call nodes. We assume
+functionality to data consumers. On the other hand, the re-              that each node is connected through a network with all other
+quirement for a data consumer is not so strong and can be                nodes.
+naturally satisfied by real-world consumers (HDFS, Kafka,                   We used a problem of incremental inverted index mainte-
+databases, etc.).                                                        nance over a stream of text items. Building inverted index is
+                                                                         implemented as a MapReduce transformation in a streaming
+B. Recovery                                                              manner. The scheme is shown in Figure 8:
+   Typically, distributed systems take into consideration the               • Map phase includes conversion of input documents into
+following types of failures:                                                   the key-value pairs (word; word positions within the
+   • Packet loss                                                               page)
+   • Node failure                                                           • Reduce phase consists of combining word positions for
+   • Network partitioning                                                      the corresponding word into the single index structure
+   Network partitioning is the particular case of failure because           The Reduce phase produces the change records of the
+in this case, computations cannot be restarted. We believe               inverted index structure, to make this algorithm suitable for
+that in this case, stream processing does not make sense. To             stream processing systems. It implies that each input page
+the best of our knowledge, there are no open-source stream               triggers the output of the corresponding change records of the
+processing systems that tolerate network partitioning.                   full index. In FlameStream this algorithm is implemented as
+the typical conversion of MapReduce transformation, which is     between checkpoints does not influence latency because out-
+shown in [25].                                                   put elements delivery and state snapshotting mechanisms are
+                                                                 independent in our model.
+                                                                    The system behavior in case of failures and recoveries with
+                                                                 1000 ms between checkpoints is demonstrated in Figure 9. It
+                                                                 is shown that the system can perform recovery processes in
+                                                                 an adequate time. Existing latency spikes are caused by the
+                                                                 replay process, JVM restart, etc.
+
+
+
+                Fig. 8. The inverted index pipeline
+
+
+  We choose the problem of an inverted index maintenance
+because it satisfies the following properties:
+  • Operation that generates change records is non-
+    commutative
+  • The computational workflow contains network shuffle
+    that can violate the ordering constraints
+  • Consistency guarantees are strongly required because
+    the inconsistent index does not make sense for many
+    applications
+  • The workload is unbalanced due to Zipf’s law                 Fig. 9. The latencies of FlameStream during three artificially reproduced
+                                                                 failures and recoveries with 1000 ms between checkpoints
+   Notably, building an inverted index in a streaming manner
+can be the halfway task between the generation of documents
+and consuming index updates by search infrastructure. In the     C. Comparison with an industrial system
+real world, this scenario can be found in freshness-aware           One of the most important goals of the experiments is the
+systems, e.g., news processing engines.                          performance comparison with an industrial solution regarding
+   By the notion of latency we assume the time between two       latency. Apache Flink has been chosen for evaluation because
+events:                                                          it is a state-of-the-art stream processing system that provides
+  1) Input page is taken into the stream                         similar functionality and achieves low latency in q the real-
+  2) All the change records for the page leave the stream        world scenarios [28].
+  Our experiments were performed on the cluster of 10               For Apache Flink, the algorithm for building the inverted
+Amazon EC2 micro instances with 1GB RAM and 1 core               index is relies on the usage of FlatMapFunction for map step
+CPU. We used Wikipedia articles as a dataset. Documents per      and stateful RichMapFunction for reduce step and for produc-
+second input rate is 50 because higher rates lead to enabling    ing the change records. The network buffer timeout is set to 0
+of backpressure mechanisms in an industrial system that we       to minimize latency. Custom TwoPhaseCommitSinkFunction
+compare with. RocksDB [27] is used as a storage for the state.   that buffers output items in memory until a transaction is
+The role of data producer and data consumer is played by a       committed is used for experiments that require exactly-once
+custom server application that sends and receives data through   semantics.
+socket and measures the latency.                                    FsStateBackend with the local file system is used for storing
+                                                                 the state, because RocksDBStateBackend requires saving state
+                                                                 to RocksDB on each update that leads to additional overhead.
+B. Overhead and recovery
+                                                                 FsStateBackend stores state on the disk only on checkpoints
+   The performance of the proposed deterministic model           and do not provide an additional overhead against RocksDB
+within the same stream processing task is deeply analyzed        storage in FlameStream, so it is fairer to use it rather than
+in [25]. In this paper, we aim to evaluate the overhead on       RocksDBStateBackend for comparison purposes.
+providing consistency guarantees and the time needed for the        In this paper, we compare 50th , 75th , 95th , and 99th
+full recovery.                                                   percentile of distributions, which clearly represent the perfor-
+   Figures 10, 11, and 12 show the latencies of FlameStream      mance from the perspective of the users’ experience.
+within distinct times between checkpoints. As expected, the         Figures 10, 11, and 12 demonstrate the comparison
+overhead on exactly-once enforcement is low (less than 10        of latencies between FlameStream and Flink within distinct
+ms), and it does not depend on the time between checkpoints.     times between checkpoints, and different guarantees on data.
+Slight overhead can be explained by the fact that asynchronous   Without guarantees, the latencies of FlameStream and Flink
+state snapshotting is executed on single-core nodes. The time    do not significantly differ. However, for exactly-once, Flink’s
+                             50ms between checkpoints                                                          VII. R ELATED WORK
+                 FlameStream, No guarantees                              50 %-ile
+                                                                         75 %-ile             Techniques for providing exactly-once [22], [10], [9] are
+                                                                         95 %-ile          discussed in details in sections I and IV. Many prior works
+                  Flink, No guarantees                                   99 %-ile          in the field of stream processing do not consider exactly-once
+                                                                                           maintenance. For instance, Aurora [29] and Borealis [30] do
+                                                                                           not provide any guarantees on data at all. Some other systems
+                          FlameStream, Exactly-Once                                        provide only partial consistency. Apache Storm [8] supports
+                                                                                           message tracking mechanism that prevents the loss of data.
+                                                                   Flink, Exactly-Once     However, exactly-once semantics is not provided, because du-
+                                                                                           plicates are still possible. Twitter Heron, that was presented as
+0      50        100      150       200 250           300     350         400
+                                   Latency(ms)                                             the next generation of Apache Storm [31], does not provide for
+                                                                                           exactly-once as well. Samza [7] also implements fairly similar
+Fig. 10. FlameStream and Flink latencies with 50ms between checkpoints
+                                                                                           to Storm model and has the same consistency guarantees.
+                                                                                              Prior works on stream processing formalization concentrate
+                             500ms between checkpoints                                     on operations specification rather than delivery guarantees.
+         FlameStream, No guarantees                                 50 %-ile               Logical foundation for specifying streaming computations is
+                                                                    75 %-ile               discussed in [32]. Declarative algebraic notations for the
+                                                                    95 %-ile
+            Flink, No guarantees                                    99 %-ile               streaming queries are introduced in [33]. Another direction
+                                                                                           in streaming formalization is designing frameworks to define
+                                                                                           operations semantics [34].
+             FlameStream, Exactly-Once
+                                                                                                                VIII. C ONCLUSION
+                                                                    Flink, Exactly-Once       We introduced a formal, conceptual framework for modeling
+0       100         200         300       400         500          600                     consistency properties for any stream processing system. We
+                                 Latency(ms)                                               demonstrated how the behavior of state-of-the-art research and
+                                                                                           industrial systems could be described in terms of the proposed
+Fig. 11. FlameStream and Flink latencies with 500ms between checkpoints
+                                                                                           framework. It was shown that the property of determinism
+                                                                                           is tightly connected with the concept of of exactly-once. We
+                                                                                           proved that non-deterministic systems must persistently save
+latency is dramatically higher, and it directly depends on                                 a state of non-commutative operations before output delivery
+the time between checkpoints. Nevertheless, such behavior                                  in order to achieve exactly-once. Most of the state-of-the-art
+is expected, because Flink needs to take state snapshot and                                stream processing systems use one of the following approaches
+release output items within a single transaction to ensure that                            to overcome this problem:
+all states of non-commutative operations are persistently saved.                              • Inherit exactly-once from batch processing using small-
+There are no hints implemented in Flink which could mark                                         sized batches (micro-batching)
+an operation as commutative, hence it waits until states of                                   • Apply distributed transaction control protocols which
+all operations are stored before output delivery. On the other                                   guarantee that states are saved before delivery of elements
+hand, the property of determinism allows FlameStream to                                          affected by these states
+avoid synchronization state snapshotting and output delivery.                                 • Write results of an operation to external storage on each
+This fact makes it possible to achieve exactly-once with low                                     input element
+overhead.
+                                                                                              All these methods experience difficulties with working
+                                                                                           under low-latency requirements (less than a second). In the
+                             1000ms between checkpoints                                    first case, latency cannot be lower than the batching period, in
+     FlameStream, No guarantees                                50 %-ile                    the second case, the distributed two-phase commit may result
+                                                               75 %-ile
+                                                               95 %-ile                    in a significant increase of latency, while in the third case
+     Flink, No guarantees                                      99 %-ile                    latency is bounded below by the duration of external writes.
+                                                                                              Using our formal inference, we designed mechanisms for
+     FlameStream, Exactly-Once                                                             achieving exactly-once on top of drifting state technique
+                                                                                           introduced in our previous work [18]. Drifting state provides
+                                                                     Flink, Exactly-Once   inexpensive determinism due to optimistic nature and low
+                                                                                           overhead on a single buffer per any stateful data flow. Be-
+0        200           400          600         800         1000                           cause of the determinism, the protocols provide the following
+                                Latency(ms)
+                                                                                           features:
+Fig. 12. FlameStream and Flink latencies with 1000ms between checkpoints
+                                                                                              • Elements are processed in a pure streaming manner
+                                                                                                 without input buffering
+   •  The processes of business-logic computations, state                              Distributed and Event-based Systems, ser. DEBS ’17. New York, NY,
+      snapshotting and delivery of output items work asyn-                             USA: ACM, 2017, pp. 112–123.
+                                                                                  [17] M. Stonebraker, U. Çetintemel, and S. Zdonik, “The 8 requirements of
+      chronously and independently                                                     real-time stream processing,” SIGMOD Rec., vol. 34, no. 4, pp. 42–47,
+   • Exactly-once is preserved                                                         Dec. 2005.
+                                                                                  [18] I. E. Kuralenok, A. Trofimov, N. Marshalkin, and B. Novikov, “De-
+   We implemented the prototype of the proposed technique to                           terministic model for distributed speculative stream processing,” in Ad-
+examine its performance. Our experiments demonstrated that                             vances in Databases and Information Systems, A. Benczúr, B. Thalheim,
+the introduced protocols for fault tolerance are scalable and                          and T. Horváth, Eds. Cham: Springer International Publishing, 2018,
+                                                                                       pp. 233–246.
+provide remarkably low overhead within different computa-                         [19] G. Weikum and G. Vossen, Transactional Information Systems: Theory,
+tional layouts. Furthermore, the comparison with the indus-                            Algorithms, and the Practice of Concurrency Control and Recovery.
+trial stream processing solution indicated that our prototype                          Morgan Kaufmann, 2002.
+                                                                                  [20] K. M. Chandy and L. Lamport, “Distributed snapshots: Determining
+could provide significantly lower latency under exactly-once                           global states of distributed systems,” ACM Trans. Comput. Syst.,
+requirement.                                                                           vol. 3, no. 1, pp. 63–75, Feb. 1985. [Online]. Available: http:
+                                                                                       //doi.acm.org/10.1145/214451.214456
+                              R EFERENCES                                         [21] P. Carbone, G. Fóra, S. Ewen, S. Haridi, and K. Tzoumas, “Lightweight
+                                                                                       Asynchronous Snapshots for Distributed Dataflows,” ArXiv e-prints, Jun.
+ [1] J. Dean and S. Ghemawat, “Mapreduce: Simplified data processing on                2015.
+     large clusters,” Commun. ACM, vol. 51, no. 1, pp. 107–113, Jan. 2008.        [22] P. Carbone, S. Ewen, G. Fóra, S. Haridi, S. Richter, and K. Tzoumas,
+     [Online]. Available: http://doi.acm.org/10.1145/1327452.1327492                   “State management in apache flink&reg;: Consistent stateful distributed
+ [2] (2017, Oct.) Apache hadoop. [Online]. Available: http://hadoop.apache.            stream processing,” Proc. VLDB, vol. 10, no. 12, pp. 1718–1729, Aug.
+     org/                                                                              2017.
+ [3] M. Zaharia, R. S. Xin, P. Wendell, T. Das, M. Armbrust, A. Dave,             [23] T. Akidau, S. Chernyak, and R. Lax, Streaming Systems: The What,
+     X. Meng, J. Rosen, S. Venkataraman, M. J. Franklin, A. Ghodsi,                    Where, When, and how of Large-scale Data Processing. ” O’Reilly
+     J. Gonzalez, S. Shenker, and I. Stoica, “Apache spark: A unified engine           Media, Inc.”, 2018.
+     for big data processing,” Commun. ACM, vol. 59, no. 11, pp. 56–65,           [24] I. E. Kuralenok, A. Trofimov, N. Marshalkin, and B. Novikov,
+     Oct. 2016.                                                                        “Flamestream: Model and runtime for distributed stream processing,”
+ [4] D. Borthakur, J. Gray, J. S. Sarma, K. Muthukkaruppan, N. Spiegelberg,            in Proceedings of the 5th ACM SIGMOD Workshop on Algorithms
+     H. Kuang, K. Ranganathan, D. Molkov, A. Menon, S. Rash et al.,                    and Systems for MapReduce and Beyond, ser. BeyondMR’18. New
+     “Apache hadoop goes realtime at facebook,” in Proc. of the 2011 ACM               York, NY, USA: ACM, 2018, pp. 8:1–8:2. [Online]. Available:
+     SIGMOD Intnl. Conf. on Management of data. ACM, 2011, pp. 1071–                   http://doi.acm.org/10.1145/3206333.3209273
+     1080.                                                                        [25] I. Kuralenok, N. Marshalkin, A. Trofimov, and B. Novikov, “An
+ [5] C. Doulkeridis and K. Norvaag, “A survey of large-scale analytical query          optimistic approach to handle out-of-order events within analytical
+     processing in mapreduce,” The VLDB Journal, vol. 23, no. 3, pp. 355–              stream processing,” in Third Conference on Software Engineering
+     380, Jun. 2014.                                                                   and Information Management (SEIM-2018) (full papers), ser. CEUR
+ [6] P. Carbone, A. Katsifodimos, S. Ewen, V. Markl, S. Haridi, and                    Workshop Proceedings, Y. Litvinov, M. Akhin, B. Novikov, and
+     K. Tzoumas, “Apache flink: Stream and batch processing in a single                V. Itsykson, Eds., no. 2135, Aachen, 2018, pp. 22–29. [Online].
+     engine,” Bulletin of the IEEE Computer Society Technical Committee                Available: http://ceur-ws.org/Vol-2135/#SEIM 2018 paper 16
+     on Data Engineering, vol. 36, no. 4, 2015.                                   [26] N. Hayashibara, A. Cherif, and T. Katayama, “Failure detectors for
+ [7] S. A. Noghabi, K. Paramasivam, Y. Pan, N. Ramesh, J. Bringhurst,                  large-scale distributed systems,” in 21st IEEE Symposium on Reliable
+     I. Gupta, and R. H. Campbell, “Samza: Stateful scalable stream process-           Distributed Systems, 2002. Proceedings. IEEE, 2002, pp. 404–409.
+     ing at linkedin,” Proc. VLDB Endow., vol. 10, no. 12, pp. 1634–1645,         [27] (2018, Mar.) Rocksdb. [Online]. Available: http://rocksdb.org/
+     Aug. 2017.                                                                   [28] S. Chintapalli, D. Dagit, B. Evans, R. Farivar, T. Graves, M. Holder-
+ [8] (2017, Oct.) Apache storm. [Online]. Available: http://storm.apache.org/          baugh, Z. Liu, K. Nusbaum, K. Patil, B. J. Peng, and P. Poulosky,
+ [9] M. Zaharia, T. Das, H. Li, S. Shenker, and I. Stoica, “Discretized                “Benchmarking streaming computation engines: Storm, flink and spark
+     streams: An efficient and fault-tolerant model for stream processing on           streaming,” in 2016 IEEE Intnl. Parallel and Distributed Processing
+     large clusters,” in Proc. of the 4th USENIX Conf. on Hot Topics in                Symp. Workshops (IPDPSW), May 2016, pp. 1789–1792.
+     Cloud Ccomputing, ser. HotCloud’12. Berkeley, CA, USA: USENIX                [29] D. J. Abadi, D. Carney, U. Çetintemel, M. Cherniack, C. Convey, S. Lee,
+     Association, 2012, pp. 10–10.                                                     M. Stonebraker, N. Tatbul, and S. Zdonik, “Aurora: A new model and
+[10] T. Akidau, A. Balikov, K. Bekiroğlu, S. Chernyak, J. Haberman, R. Lax,           architecture for data stream management,” The VLDB Journal, vol. 12,
+     S. McVeety, D. Mills, P. Nordstrom, and S. Whittle, “Millwheel: Fault-            no. 2, pp. 120–139, Aug. 2003.
+     tolerant stream processing at internet scale,” Proc. VLDB, vol. 6, no. 11,   [30] D. J. Abadi, Y. Ahmad, M. Balazinska, U. Çetintemel, M. Cherniack,
+     pp. 1033–1044, Aug. 2013.                                                         J. Hwang, W. Lindner, A. Maskey, A. Rasin, E. Ryvkina, N. Tatbul,
+[11] (2018, Mar.) Trident. [Online]. Available: http://storm.apache.org/               Y. Xing, and S. B. Zdonik, “The design of the borealis stream
+     releases/current/Trident-tutorial.html                                            processing engine,” in CIDR 2005, Second Biennial Conference on
+[12] S. Chintapalli, D. Dagit, B. Evans, R. Farivar, T. Graves, M. Holder-             Innovative Data Systems Research, Asilomar, CA, USA, January
+     baugh, Z. Liu, K. Nusbaum, K. Patil, B. J. Peng, and P. Poulosky,                 4-7, 2005, Online Proceedings. www.cidrdb.org, 2005, pp. 277–289.
+     “Benchmarking streaming computation engines: Storm, flink and spark               [Online]. Available: http://cidrdb.org/cidr2005/papers/P23.pdf
+     streaming,” in 2016 IEEE Intnl. Parallel and Distributed Processing          [31] S. Kulkarni, N. Bhagat, M. Fu, V. Kedigehalli, C. Kellogg, S. Mittal,
+     Symposium Workshops (IPDPSW), May 2016, pp. 1789–1792.                            J. M. Patel, K. Ramasamy, and S. Taneja, “Twitter heron: Stream
+[13] S. Qian, G. Wu, J. Huang, and T. Das, “Benchmarking modern dis-                   processing at scale,” in Proc. of the 2015 ACM SIGMOD Intnl. Conf. on
+     tributed streaming platforms,” in 2016 IEEE International Conference              Management of Data, ser. SIGMOD ’15. New York, NY, USA: ACM,
+     on Industrial Technology (ICIT), March 2016, pp. 592–598.                         2015, pp. 239–250.
+[14] “Exactly once is not exactly the same,” https://streaml.io/blog/             [32] R. Alur, K. Mamouras, C. Stanford, and V. Tannen, “Interfaces for
+     exactly-once, 2017, accessed: 2018-10-08.                                         stream processing systems,” in Principles of Modeling. Springer, 2018,
+[15] “Exactly-once or not, atomic broadcast is still impossible                        pp. 38–60.
+     in kafka - or anywhere,” https://www.the-paper-trail.org/post/               [33] S. Hallé and S. Varvaressos, “A formalization of complex event stream
+     2017-07-28-exactly-not-atomic-broadcast-still-impossible-kafka/,                  processing,” in 2014 IEEE 18th International Enterprise Distributed
+     2017, accessed: 2018-10-08.                                                       Object Computing Conference. IEEE, 2014, pp. 2–11.
+[16] N. Zacheilas, V. Kalogeraki, Y. Nikolakopoulos, V. Gulisano, M. Papatri-
+                                                                                  [34] H. Beck, M. Dao-Tran, and T. Eiter, “Lars: A logic-based framework
+     antafilou, and P. Tsigas, “Maximizing determinism in stream processing
+                                                                                       for analytic reasoning over streams,” Artificial Intelligence, vol. 261, pp.
+     under latency constraints,” in Proc. of the 11th ACM Intnl. Conf. on
+                                                                                       16–70, 2018.
+
