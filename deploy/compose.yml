@@ -1,0 +1,20 @@
+services:
+  # anvil-events daemon (subscriber + journal) — container shape (ADR-0002)
+  events:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: anvil-events:latest
+    # journal lives on the HOST, never inside the container
+    volumes:
+      - anvil-events-root:/var/lib/anvil/events
+    environment:
+      ANVIL_EVENTS_NATS_URL: nats://127.0.0.1:4222
+      ANVIL_EVENTS_ROOT: /var/lib/anvil/events
+    ports:
+      - "127.0.0.1:9877:9877"   # loopback-only health
+    restart: unless-stopped
+    # cross-host: override ANVIL_EVENTS_NATS_URL to the fleet broker over tailnet
+
+volumes:
+  anvil-events-root:

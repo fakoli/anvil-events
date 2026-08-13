@@ -1,0 +1,14 @@
+[Unit]
+Description=anvil-events daemon (subscriber + journal)
+After=network-online.target nats.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/anvil-events serve --root /var/lib/anvil/events --subject anvil.fleet.>
+Environment=ANVIL_EVENTS_NATS_URL=nats://127.0.0.1:4222
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

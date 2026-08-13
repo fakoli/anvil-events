@@ -16,6 +16,7 @@ import os
 import sys
 
 from .nats_mini import NATSClient
+from .daemon import main as daemon_main
 from .outbox import CausalChecker, KINDS, Outbox
 
 DEFAULT_ROOT = os.path.expanduser("~/.anvil/events")
@@ -163,6 +164,12 @@ def main(argv=None):
     s.add_argument("subject")
     s.add_argument("--count", type=int, default=1)
     s.add_argument("--timeout", type=int, default=10)
+    serve = sub.add_parser("serve")
+    serve.add_argument("--root", default=None)
+    serve.add_argument("--url", default=None)
+    serve.add_argument("--subject", default="anvil.fleet.>")
+    serve.add_argument("--health-port", type=int, default=9877)
+    serve.add_argument("--once", action="store_true")
     sub.add_parser("status")
     r = sub.add_parser("replay")
     r.add_argument("--lines", type=int, default=20)
@@ -171,6 +178,16 @@ def main(argv=None):
     g = sub.add_parser("gc")
     g.add_argument("--archive-days", type=int, default=90)
     args = p.parse_args(argv)
+    if args.cmd == "serve":
+        # local argv: --root/--url default from the real defaults
+        sv = ["--subject", args.subject, "--health-port", str(args.health_port)]
+        if args.root:
+            sv += ["--root", args.root]
+        if args.url:
+            sv += ["--url", args.url]
+        if args.once:
+            sv += ["--once"]
+        return daemon_main(sv)
     return {"init": cmd_init, "emit": cmd_emit, "pub": cmd_pub,
             "sub": cmd_sub, "status": cmd_status, "replay": cmd_replay,
             "verify": cmd_verify, "gc": cmd_gc}[args.cmd](args)

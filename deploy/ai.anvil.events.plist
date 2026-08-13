@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.anvil.events</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/anvil-events</string>
+        <string>serve</string>
+        <string>--root</string>
+        <string>/Users/REPLACE_ME/.anvil/events</string>
+        <string>--subject</string>
+        <string>anvil.fleet.&gt;</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ANVIL_EVENTS_NATS_URL</key>
+        <string>nats://127.0.0.1:4222</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/anvil-events.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/anvil-events.err.log</string>
+</dict>
+</plist>

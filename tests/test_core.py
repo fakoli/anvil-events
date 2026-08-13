@@ -325,5 +325,35 @@ class TestAckOrdering(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
 
+class TestDaemonGate(unittest.TestCase):
+    """Daemon validation gate: forged/unknown events are DROPPED (ADR-0001)."""
+
+    def test_valid_event_passes_gate(self):
+        from anvil_events.daemon import EventsDaemon
+        ok = EventsDaemon._valid(make_event("p1", "serve.up", "node-a", {}))
+        self.assertTrue(ok)
+
+    def test_unknown_kind_dropped(self):
+        from anvil_events.daemon import EventsDaemon
+        e = make_event("p1", "serve.up", "node-a", {})
+        e["kind"] = "not.a.kind"
+        self.assertFalse(EventsDaemon._valid(e))
+
+    def test_forged_missing_fields_dropped(self):
+        from anvil_events.daemon import EventsDaemon
+        e = make_event("p1", "serve.up", "node-a", {})
+        del e["event_id"]
+        self.assertFalse(EventsDaemon._valid(e))
+        e2 = make_event("p1", "serve.up", "node-a", {})
+        e2["producer"] = ""
+        self.assertFalse(EventsDaemon._valid(e2))
+
+    def test_wrong_version_dropped(self):
+        from anvil_events.daemon import EventsDaemon
+        e = make_event("p1", "serve.up", "node-a", {})
+        e["version"] = 999
+        self.assertFalse(EventsDaemon._valid(e))
+
+
 if __name__ == "__main__":
     unittest.main()
