@@ -1,21 +1,36 @@
 services:
+  # NATS JetStream broker — required by the events daemon
+  nats:
+    image: nats:2.11-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "127.0.0.1:4222:4222"   # client (loopback-only publication)
+      - "127.0.0.1:8222:8222"   # monitoring (loopback-only)
+    restart: unless-stopped
+    volumes:
+      - anvil-nats-data:/data
+
   # anvil-events daemon (subscriber + journal) — container shape (ADR-0002)
   events:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     image: anvil-events:latest
+    depends_on:
+      - nats
     # journal lives on the HOST, never inside the container
     volumes:
       - anvil-events-root:/var/lib/anvil/events
     environment:
-      ANVIL_EVENTS_NATS_URL: nats://127.0.0.1:4222
+      # service DNS: the broker is reachable at `nats:4222` inside the network
+      ANVIL_EVENTS_NATS_URL: nats://nats:4222
       ANVIL_EVENTS_ALLOWED_PRODUCERS: ${ANVIL_EVENTS_ALLOWED_PRODUCERS:?set trusted producers}
       ANVIL_EVENTS_ROOT: /var/lib/anvil/events
     ports:
-      - "127.0.0.1:9877:9877"   # loopback-only health
+      - "127.0.0.1:9877:9877"   # health: host-loopback -> container 0.0.0.0
     restart: unless-stopped
     # cross-host: override ANVIL_EVENTS_NATS_URL to the fleet broker over tailnet
 
 volumes:
   anvil-events-root:
+  anvil-nats-data:

@@ -24,13 +24,11 @@ fact storage.
   "kind": "promote.applied",
   "subject": "anvil.fleet.node-a.promote.applied",
   "payload": {
+    "promotion": "ops-2026-08-13",
     "tier": "primary",
     "model": "example-llm-pr-...-tp2-393k",
     "context": 131072,
-    "rollback": "example-rollback",
-    "repo": "operator-repo",
-    "repo_rev": "0000000",
-    "repo_synced": true
+    "rollback": "example-rollback"
   },
   "causes": []
 }
@@ -48,7 +46,7 @@ omit it.
 | `serve.down` | `.serve.down` | serve name, graceful | `anvil-serving serves down` |
 | `profile.enter` | `.profile.enter` | mode (split/exclusive), profile id, exclusive_target | `serves profile enter` |
 | `profile.leave` | `.profile.leave` | mode, profile id, restore group | `serves profile leave` |
-| `promote.applied` | `.promote.applied` | tier, model, context, rollback, revision | `serves promote` |
+| `promote.applied` | `.promote.applied` | promotion, tier, model, context, rollback | `serves promote` |
 | `promote.rolled_back` | `.promote.rolled_back` | tier, restored model | `serves promote --rollback` |
 | `config.adopted` | `.config.adopted` | file(s), repo, rev; `correlation_id` links to promote | commit-push-on-promote wrapper |
 | `repo.synced` | `.repo.synced` | repo, pushed rev, ok/failed; `correlation_id` links | the operator commit-push hook |

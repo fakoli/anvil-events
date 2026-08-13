@@ -927,6 +927,7 @@ class Outbox:
             cutoff = time.time() - archive_days * 86400
             removed = 0
             deleted = False
+            deleted_names = []
             archive_fd = open_pinned_directory(self.archive_dir)
             try:
                 for fn in os.listdir(archive_fd):
@@ -942,6 +943,17 @@ class Outbox:
                         os.unlink(fn, dir_fd=archive_fd)
                         removed += 1
                         deleted = True
+                        deleted_names.append(fn)
+                if deleted:
+                    # PRD: "the sweep logs deletions to the day's journal line."
+                    # Record a durable, observable audit of what was removed
+                    # (same mechanism as the oversize degraded alert).
+                    self._emit_locked(
+                        "local:gc", "event.degraded", "local",
+                        {"cause": "retention sweep deleted expired archives",
+                         "records": removed,
+                         "file": ",".join(deleted_names)},
+                    )
                 # size guard (rotation + alert + HARD CAP enforcement)
                 total = 0
                 for f in os.listdir(archive_fd):

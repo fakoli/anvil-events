@@ -71,7 +71,7 @@ anvil events sub <subject> [--count N]   # subscribe (bounded)
 anvil events emit <kind> --host H ...      # outbox-first + publish
 anvil events serve                        # daemon (subscriber + journal)
 anvil events replay [--lines N]           # replay the journal
-anvil events verify --root <dir>          # causal-consistency check
+anvil events verify <dir-or-managed-file> # causal-consistency check
 ```
 
 Transport: a minimal stdlib NATS/JetStream client (`anvil_events/nats_mini.py`)

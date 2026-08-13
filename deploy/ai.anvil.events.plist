@@ -24,8 +24,10 @@
     <dict>
         <key>ANVIL_EVENTS_NATS_URL</key>
         <string>nats://127.0.0.1:4222</string>
-        <key>ANVIL_EVENTS_ALLOWED_PRODUCERS</key>
-        <string>REPLACE_WITH_COMMA_SEPARATED_PRODUCERS</string>
+        <!-- ANVIL_EVENTS_ALLOWED_PRODUCERS intentionally ABSENT:
+             unset means DEFAULT-DENY (no producers authorized). Set it in
+             an EnvironmentVariables override or a profile to authorize the
+             fleet producers (comma-separated "host:service" pairs). -->
     </dict>
 
     <key>StandardOutPath</key>

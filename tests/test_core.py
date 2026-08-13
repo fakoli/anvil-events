@@ -2323,6 +2323,17 @@ class TestGCSizeGuard(unittest.TestCase):
                 result = o.gc(archive_days=90, max_bytes=10 ** 9)
             self.assertEqual(result["removed"], 1)
             self.assertGreaterEqual(len(directory_syncs), 1)
+            # PRD: "the sweep logs deletions to the day's journal line." The
+            # audit is a durable producer day-file (outbox/pending) record,
+            # exactly like the oversize degraded signal.
+            audits = [
+                e for e in o.read_pending()
+                if e.get("kind") == "event.degraded"
+                and e.get("payload", {}).get("cause", "")
+                .startswith("retention sweep deleted")
+            ]
+            self.assertEqual(len(audits), 1, "GC deletion must be journaled")
+            self.assertEqual(audits[0]["payload"]["records"], 1)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -2347,16 +2358,18 @@ class TestGCSizeGuard(unittest.TestCase):
             real_fsync = os.fsync
             real_unlink = os.unlink
             archive_fds_seen = []
+            archive_inode = None
             swapped = False
             pinned_inode = None
-
             # open the pinned archive fd exactly once (as gc does), so we can
             # prove the fsync target is that same inode even after a swap
             real_open_pinned = anvil_events.outbox.open_pinned_directory
 
             def tracking_pinned(directory):
-                nonlocal pinned_inode
+                nonlocal pinned_inode, archive_inode
                 fd = real_open_pinned(directory)
+                if directory == o.archive_dir and archive_inode is None:
+                    archive_inode = os.fstat(fd).st_ino
                 if pinned_inode is None and directory == o.archive_dir:
                     pinned_inode = os.fstat(fd).st_ino
                 return fd
@@ -2386,10 +2399,16 @@ class TestGCSizeGuard(unittest.TestCase):
                 result = o.gc(archive_days=90, max_bytes=10 ** 9)
             self.assertEqual(result["removed"], 1, result)
             self.assertGreaterEqual(len(archive_fds_seen), 1)
-            # every directory fsync must target the ORIGINAL pinned inode
+            # every fsync targeting the ARCHIVE directory must be the
+            # original pinned inode (the GC deletion durability guarantee).
+            # The audit record's outbox fsyncs are separate and legitimate.
+            archive_syncs = [ino for ino in archive_fds_seen
+                             if ino == archive_inode]
             self.assertTrue(pinned_inode is not None)
-            self.assertTrue(all(ino == pinned_inode for ino in archive_fds_seen),
-                            f"fsync target inodes {archive_fds_seen} "
+            self.assertTrue(archive_inode is not None)
+            self.assertEqual(pinned_inode, archive_inode)
+            self.assertEqual(archive_syncs, [pinned_inode] * len(archive_syncs),
+                            f"archive fsync inodes {archive_syncs} "
                             f"!= pinned {pinned_inode}")
             # the original (moved) archive still holds the deletion (empty dir)
             self.assertEqual(os.listdir(o.archive_dir + ".moved"), [])

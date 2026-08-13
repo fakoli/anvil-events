@@ -7,7 +7,9 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/local/bin/anvil-events serve --root /var/lib/anvil/events --subject anvil.fleet.>
 Environment=ANVIL_EVENTS_NATS_URL=nats://127.0.0.1:4222
-Environment=ANVIL_EVENTS_ALLOWED_PRODUCERS=REPLACE_WITH_COMMA_SEPARATED_PRODUCERS
+# ANVIL_EVENTS_ALLOWED_PRODUCERS intentionally UNSET: default-deny.
+# Authorize the fleet producers via an EnvironmentFile or drop-in, e.g.:
+#   Environment=ANVIL_EVENTS_ALLOWED_PRODUCERS=node-a:serves,node-b:serves
 Restart=on-failure
 RestartSec=2
 
