@@ -56,7 +56,8 @@ def validate_event(ev) -> tuple[bool, str]:
     """Return (ok, reason). An event is valid if:
     - it is a dict with version==1
     - kind is in the frozen vocabulary
-    - required payload fields are present and non-empty
+    - required payload fields are PRESENT (None-check, so valid `False`
+      booleans like `ok=False` / `reachable=False` are accepted)
     """
     if not isinstance(ev, dict):
         return False, "not a dict"
@@ -69,7 +70,7 @@ def validate_event(ev) -> tuple[bool, str]:
     if not isinstance(payload, dict):
         return False, "payload must be a dict"
     required = _PAYLOAD_REQUIRED.get(kind, ())
-    missing = [f for f in required if not payload.get(f)]
+    missing = [f for f in required if payload.get(f) is None]
     if missing:
         return False, f"payload missing required fields: {missing}"
     return True, ""
@@ -182,20 +183,33 @@ def git_sync(repo_dir, message="ops: adopt recorded state", push=False,
              _run=subprocess.run):
     """Commit pending changes in `repo_dir` and optionally push.
 
-    Returns (rc, details). Uses `_run` for hermeticity. Commits only when
-    there are staged/untracked changes; a clean tree is a no-op success.
+    Returns `(rc, details)` where details is ALWAYS a dict (never a bare
+    string — cmd_sync_repo does `**details`). A failed `git status` is an
+    error (rc non-zero), not a clean-tree no-op. A clean tree (empty
+    status, rc 0) is a no-op success with `committed=False`.
     """
     def run(argv, **kwargs):
         return _run(argv, capture_output=True, text=True, **kwargs)
 
     changed = run(["git", "status", "--porcelain"], cwd=repo_dir)
-    if changed.returncode == 0 and changed.stdout.strip():
+    if changed.returncode != 0:
+        return changed.returncode, {
+            "committed": False, "pushed": False,
+            "error": (changed.stderr or changed.stdout or "git status failed").strip(),
+        }
+    if changed.stdout.strip():
         add = run(["git", "add", "-A"], cwd=repo_dir)
         if add.returncode != 0:
-            return add.returncode, add.stderr.strip()
+            return add.returncode, {
+                "committed": False, "pushed": False,
+                "error": (add.stderr or "git add failed").strip(),
+            }
         commit = run(["git", "commit", "-m", message], cwd=repo_dir)
         if commit.returncode != 0:
-            return commit.returncode, commit.stderr.strip()
+            return commit.returncode, {
+                "committed": False, "pushed": False,
+                "error": (commit.stderr or "git commit failed").strip(),
+            }
         committed = True
     else:
         committed = False
@@ -203,7 +217,10 @@ def git_sync(repo_dir, message="ops: adopt recorded state", push=False,
     if push:
         push_result = run(["git", "push"], cwd=repo_dir)
         if push_result.returncode != 0:
-            return push_result.returncode, push_result.stderr.strip()
+            return push_result.returncode, {
+                "committed": committed, "pushed": False,
+                "error": (push_result.stderr or "git push failed").strip(),
+            }
         pushed = True
     return 0, {"committed": committed, "pushed": pushed}
 
