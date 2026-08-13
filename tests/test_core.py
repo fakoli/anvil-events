@@ -551,8 +551,10 @@ class TestGCSizeGuard(unittest.TestCase):
             o = Outbox(root)
             # create two rotated-overflow files (from prior rotations) + current day
             day = utcnow_iso()[:10]
-            sizes = {f"{day}.1000.jsonl": 40, f"{day}.2000.jsonl": 80}
-            for name, age in ((f"{day}.1000.jsonl", 3), (f"{day}.2000.jsonl", 1)):
+            epoch_old = "1786600000"   # 10-digit epoch suffixes (as rotation produces)
+            epoch_new = "1786600200"
+            sizes = {f"{day}.{epoch_old}.jsonl": 40, f"{day}.{epoch_new}.jsonl": 80}
+            for name, age in ((f"{day}.{epoch_old}.jsonl", 3), (f"{day}.{epoch_new}.jsonl", 1)):
                 p = os.path.join(root, "archive", name)
                 with open(p, "w") as f:
                     f.write("x" * sizes[name])
@@ -561,27 +563,35 @@ class TestGCSizeGuard(unittest.TestCase):
             ordinary = os.path.join(root, "archive", "2026-06-01.jsonl")
             with open(ordinary, "w") as f:
                 f.write("y" * 50)
-            # a big current-day file pushes total over the 340-byte cap
+            # an ODD single-digit-suffix file (NOT a rotation timestamp) must
+            # never be evicted either (reviewer probe: 2026-08-12.5.jsonl)
+            odd = os.path.join(root, "archive", "2026-08-12.5.jsonl")
+            with open(odd, "w") as f:
+                f.write("z" * 40)
+            # a big current-day file pushes total over the 380-byte cap
             with open(os.path.join(root, "archive", day + ".jsonl"), "w") as f:
                 f.write("x" * 200)
-            result = o.gc(archive_days=90, max_bytes=340)
+            result = o.gc(archive_days=90, max_bytes=380)
             self.assertTrue(result["rotated"], result)
             self.assertTrue(result["degraded"], "must emit event.degraded")
-            # after eviction: total remaining <= cap (340 enforced with margin)
+            # after eviction: total remaining <= cap (380 enforced with margin)
             total = sum(os.path.getsize(os.path.join(root, "archive", f))
                         for f in os.listdir(os.path.join(root, "archive"))
                         if f.endswith(".jsonl"))
-            self.assertLessEqual(total, 340, f"hard cap not enforced: total={total}")
+            self.assertLessEqual(total, 380, f"hard cap not enforced: total={total}")
             # the OLDEST rotated file (1000, older mtime) was evicted first
             remaining = os.listdir(os.path.join(root, "archive"))
-            self.assertNotIn(f"{day}.1000.jsonl", remaining,
+            self.assertNotIn(f"{day}.{epoch_old}.jsonl", remaining,
                              "oldest rotated overflow must be evicted")
             # the NEWER rotated file survives (eviction stopped under cap)
-            self.assertIn(f"{day}.2000.jsonl", remaining,
+            self.assertIn(f"{day}.{epoch_new}.jsonl", remaining,
                           "newer rotated overflow must remain (stopped under cap)")
             # the ordinary archive file was NOT touched
             self.assertIn("2026-06-01.jsonl", remaining,
                           "ordinary archive must never be evicted")
+            # the odd-suffix file (2026-08-12.5.jsonl) also survived
+            self.assertIn("2026-08-12.5.jsonl", remaining,
+                          "odd-suffix non-rotation file must never be evicted")
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

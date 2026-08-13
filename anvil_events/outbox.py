@@ -241,9 +241,13 @@ class Outbox:
                                              {"cause": f"archive size {total} > {max_bytes}"})
                 # HARD CAP enforcement: evict OLDEST rotated overflow files
                 # (timestamped siblings of the day rotation) until under cap.
-                # Strict pattern: `YYYY-MM-DD.<digits>.jsonl` — never the bare
-                # current-day file or any ordinary archive with dots elsewhere.
-                _ROTATED = re.compile(r"\d{4}-\d{2}-\d{2}\.\d+\.jsonl$")
+                # Strict pattern: `YYYY-MM-DD.<epoch>.jsonl` where <epoch> is
+                # the int(time.time()) suffix the rotation produces (9-11
+                # digits across the representable range, 10 in our era).
+                # Never the bare current-day file, ordinary archives with
+                # dots elsewhere, or odd single/multi-digit suffixes that are
+                # not rotation timestamps.
+                _ROTATED = re.compile(r"\d{4}-\d{2}-\d{2}\.\d{9,11}\.jsonl$")
                 overflow = sorted(
                     (os.path.join(self.archive_dir, f) for f in os.listdir(self.archive_dir)
                      if _ROTATED.match(f)),  # rotated-overflow siblings only
