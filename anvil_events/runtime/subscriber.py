@@ -64,6 +64,10 @@ class Subscriber:
         while not self.stop.is_set():
             client = None
             try:
+                if self.processor is not None:
+                    self.processor.reconcile_stored()
+                if self.stop.is_set():
+                    break
                 client = self.client_factory(self.url).connect(timeout=5)
                 with self._client_lock:
                     self._client = client

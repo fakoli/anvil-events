@@ -49,3 +49,22 @@ class DesiredStateProcessor:
             causes=[event["event_id"]],
         )
         return result
+
+    def reconcile_stored(self):
+        """Verify and repair every locally recorded applied resource."""
+        event_ids = self.engine.state.applied_event_ids(self.node)
+        if not event_ids:
+            return ()
+        wanted = set(event_ids)
+        events = {
+            event["event_id"]: event
+            for event in self.store.read_journal()
+            if event["event_id"] in wanted and event["kind"] == "state.desired"
+        }
+        missing = wanted - set(events)
+        if missing:
+            raise ValueError("applied desired event is missing from the journal")
+        results = tuple(self.process(events[event_id]) for event_id in event_ids)
+        if any(result.state != "applied" for result in results):
+            raise RuntimeError("stored desired state did not converge")
+        return results

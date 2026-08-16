@@ -83,6 +83,19 @@ class BlockingAdapter(FakeAdapter):
             raise TimeoutError("test did not release blocking adapter")
 
 
+class RepairingAdapter(FakeAdapter):
+    def __init__(self):
+        super().__init__()
+        self.drifted = True
+
+    def apply(self, desired, artifact):
+        super().apply(desired, artifact)
+        self.drifted = False
+
+    def verify(self, desired, artifact):
+        return not self.drifted
+
+
 class ReconcileEngineTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -138,6 +151,64 @@ class ReconcileEngineTests(unittest.TestCase):
             item["kind"] == "reconcile.applied"
             for item in self.store.read_pending()
         ))
+
+    def test_applied_generation_repairs_adapter_drift(self):
+        adapter = RepairingAdapter()
+        registry = AdapterRegistry()
+        registry.register(adapter)
+        engine = ReconcileEngine(
+            "node-b", self.store, registry, FakeResolver(),
+            AllowBindingsPolicy({
+                ("node-a:router", "routing/clients", "router_config"),
+            }),
+        )
+        processor = DesiredStateProcessor(
+            engine, self.store,
+            producer="node-b:reconciler", node="node-b",
+        )
+        event = self._journal(desired_event(targets=["node-b"]))
+        processor.process(event)
+        adapter.drifted = True
+
+        result = processor.process(event)
+
+        self.assertEqual("applied", result.state)
+        self.assertEqual(2, adapter.applied)
+
+    def test_startup_reconciliation_repairs_stored_applied_resource(self):
+        adapter = RepairingAdapter()
+        registry = AdapterRegistry()
+        registry.register(adapter)
+        engine = ReconcileEngine(
+            "node-b", self.store, registry, FakeResolver(),
+            AllowBindingsPolicy({
+                ("node-a:router", "routing/clients", "router_config"),
+            }),
+        )
+        processor = DesiredStateProcessor(
+            engine, self.store,
+            producer="node-b:reconciler", node="node-b",
+        )
+        event = self._journal(desired_event(targets=["node-b"]))
+        processor.process(event)
+        adapter.drifted = True
+
+        results = processor.reconcile_stored()
+
+        self.assertEqual(["applied"], [result.state for result in results])
+        self.assertEqual(2, adapter.applied)
+
+    def test_applied_resource_keeps_retrying_when_artifact_is_unavailable(self):
+        event = self._journal(desired_event(targets=["node-b"]))
+        self._engine().process(event)
+        unavailable = self._engine(
+            resolver=FakeResolver(error=ArtifactUnavailable("not yet")),
+        )
+
+        with self.assertRaises(ArtifactUnavailable):
+            unavailable.process(event)
+
+        self.assertEqual("applied", self._engine().process(event).state)
 
     def test_deny_by_default_waits_without_apply(self):
         event = self._journal(desired_event(targets=["node-b"]))

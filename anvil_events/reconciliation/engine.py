@@ -46,10 +46,39 @@ class ReconcileEngine:
         if claim == "superseded":
             return ReconcileResult(claim, operation_id, None, None)
         if claim == "applied":
-            return ReconcileResult(
-                claim, operation_id, "reconcile.applied",
-                self._outcome_payload(payload, operation_id),
-            )
+            try:
+                adapter = self.adapters.get(payload["adapter"])
+                artifact = self.artifacts.resolve(
+                    payload["artifact"], payload["revision"],
+                )
+            except ValueError:
+                return ReconcileResult(
+                    "failed", operation_id, "reconcile.failed",
+                    {**self._outcome_payload(payload, operation_id),
+                     "error": "artifact or adapter resolution failed"},
+                )
+            if artifact.revision != payload["revision"]:
+                return ReconcileResult(
+                    "failed", operation_id, "reconcile.failed",
+                    {**self._outcome_payload(payload, operation_id),
+                     "error": "artifact revision mismatch"},
+                )
+            if content_sha256(artifact.data) != payload["content_sha256"]:
+                return ReconcileResult(
+                    "failed", operation_id, "reconcile.failed",
+                    {**self._outcome_payload(payload, operation_id),
+                     "error": "artifact digest mismatch"},
+                )
+            try:
+                verified = adapter.verify(desired, artifact)
+            except Exception:
+                verified = False
+            if verified:
+                return ReconcileResult(
+                    claim, operation_id, "reconcile.applied",
+                    self._outcome_payload(payload, operation_id),
+                )
+            self.state.reopen_applied(operation_id, desired, self.node)
         if claim in ("failed", "indeterminate"):
             return ReconcileResult(
                 claim, operation_id, "reconcile.failed",
