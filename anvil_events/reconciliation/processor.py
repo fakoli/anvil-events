@@ -37,7 +37,12 @@ class DesiredStateProcessor:
             )
         if result.outcome_kind is None:
             return result
-        operation_key = f"outcome:{result.operation_id}:{result.outcome_kind}"
+        delivery_operation_id = ReconcileState.operation_id(
+            self.node, event["event_id"],
+        )
+        operation_key = (
+            f"outcome:{delivery_operation_id}:{result.outcome_kind}"
+        )
         self.store.record_v2(
             operation_key,
             operation_key,

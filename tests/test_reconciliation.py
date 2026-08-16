@@ -152,6 +152,37 @@ class ReconcileEngineTests(unittest.TestCase):
             for item in self.store.read_pending()
         ))
 
+    def test_equivalent_new_event_gets_distinct_idempotent_outcome(self):
+        first = self._journal(desired_event(targets=["node-b"]))
+        second = self._journal(desired_event(sequence=2, targets=["node-b"]))
+        processor = DesiredStateProcessor(
+            self._engine(), self.store,
+            producer="node-b:reconciler", node="node-b",
+        )
+
+        processor.process(first)
+        processor.process(second)
+        processor.process(second)
+
+        self.assertEqual(1, self.adapter.applied)
+        outcomes = [
+            item for item in self.store.read_pending()
+            if item["kind"] == "reconcile.applied"
+        ]
+        self.assertEqual(2, len(outcomes))
+        self.assertEqual(
+            [[first["event_id"]], [second["event_id"]]],
+            [item["causes"] for item in outcomes],
+        )
+        with self.store.database.connect() as connection:
+            operation_keys = {
+                row["idempotency_key"]
+                for row in connection.execute(
+                    "SELECT idempotency_key FROM operations"
+                )
+            }
+        self.assertEqual(2, len(operation_keys))
+
     def test_applied_generation_repairs_adapter_drift(self):
         adapter = RepairingAdapter()
         registry = AdapterRegistry()
