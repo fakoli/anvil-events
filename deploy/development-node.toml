@@ -1,0 +1,17 @@
+version = 1
+node = "node-b"
+producer = "node-b:reconciler"
+allowed_producers = ["node-a:router"]
+
+[artifact_source]
+type = "directory"
+root = "/app/deploy/artifacts"
+
+[[adapters]]
+name = "router_config"
+type = "managed_file"
+destination = "/var/lib/anvil/events/managed/router-client.toml"
+validator = "toml"
+mode = 384
+auto_apply_resources = ["routing/clients"]
+authority_producers = ["node-a:router"]

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anvil-events"
-version = "0.1.0"
-description = "Fleet lifecycle event bus and journal for the Anvil family (stdlib-only)."
+version = "0.2.0"
+description = "Local-first desired-state convergence events for small fleets."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -13,7 +13,7 @@ authors = [{ name = "fakoli" }]
 dependencies = []   # stdlib-only by design
 
 [project.optional-dependencies]
-dev = ["pytest", "coverage>=7.6", "jsonschema[format]>=4.23", "ruff==0.11.12"]
+dev = ["coverage>=7.6", "jsonschema[format]>=4.23", "ruff==0.11.12"]
 
 [tool.ruff]
 # Explicit rule scope (mirrors anvil-serving practice): do not rely on
@@ -21,7 +21,7 @@ dev = ["pytest", "coverage>=7.6", "jsonschema[format]>=4.23", "ruff==0.11.12"]
 # `I` (isort), `UP` (pyupgrade), `B` (bugbear) are stable, high-value rules.
 # `BLE001`/`S110` are intentionally NOT enabled: this codebase is a stdlib-only
 # event client where bounded `except Exception` around a socket/outbox boundary
-# is the correct degraded-mode behavior (see nats_mini/cli/daemon).
+# is the correct degraded-mode behavior around bounded transport/storage edges.
 target-version = "py311"
 
 [tool.ruff.lint]
@@ -38,5 +38,12 @@ anvil-events = "anvil_events.cli:main"
 include = ["anvil_events*"]
 
 [tool.setuptools.data-files]
-"share/anvil-events/schemas" = ["schemas/events-v1.json"]
-"share/anvil-events/deploy" = ["deploy/nats-stream.json"]
+"share/anvil-events/schemas" = ["schemas/events-v1.json", "schemas/events-v2.json"]
+"share/anvil-events/deploy" = [
+  "deploy/development-node.toml",
+  "deploy/nats-fleet.example.conf",
+  "deploy/nats-stream.json",
+]
+"share/anvil-events/deploy/artifacts/routing/clients" = [
+  "deploy/artifacts/routing/clients/rev-1",
+]

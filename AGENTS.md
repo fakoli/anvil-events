@@ -65,25 +65,26 @@ The session WILL run long. When context runs low:
 
 | Milestone | Scope (prd.md) | Status |
 |---|---|---|
-| M1 | repo + schema + CI | ✅ DONE — public, 4-round review loop passed (final APPROVE) |
-| M2 | Core CLI + outbox + **JetStream + degraded + gc** | 🔄 IN PROGRESS (partial: CLI/outbox/verify done; JetStream dedup publish + `event.degraded` + gc size guard pending) |
-| M3 | anvil-serving `[events]` seam | ⬜ pending |
-| M4 | private operator adapter (commit-push-on-promote + gateway subscriber) | ⬜ pending |
-| M5 | rollout + observability | ⬜ pending |
+| R1 | audit + research correction + composable domain/storage | local implementation complete; PR/CI/review pending |
+| R2 | secure transport + reconciliation + portable runtime | local implementation and Compose fault proof complete; PR/CI/review pending |
+| R3 | public anvil-serving lifecycle seam | pending |
+| R4 | private manifests + canary | pending separate authorization |
+| R5 | staged rollout + live acceptance | pending separate authorization |
 
-**Last completed action / commit:** [UPDATE ME on every milestone boundary]
+**Last completed action:** local R1/R2 gates and broker-loss recovery proof;
+no source commit, installation, or deployment yet.
 
 ## 5. Repo facts (for quick orientation)
 
 - Public repo: `fakoli/anvil-events` on GitHub. Branch: `main`.
 - Git identity: `Sekou Doumbouya <sdoumbouya81@gmail.com>`.
-- Test command: `python3 -m unittest discover -s tests -q` (currently 26 pass).
+- Test command: `python -W error::ResourceWarning -m unittest discover -s tests -q`
+  (currently 117 pass on Windows and Linux; one Windows-only test is skipped
+  on Linux).
 - Lint: `ruff check .`.
-- CLI: `anvil-events` installed at `~/.local/bin/anvil-events` (uv tool).
-- Daemon: launchd agent `com.fakoli.anvil-events` on Mini
-  (`serve --root ~/.anvil/events --subject anvil.fleet.>`; health `:9877`).
-- Broker: nats-server `127.0.0.1:4222` (JetStream) — NOT yet a persistent
-  service (gap: make it brew services or a LaunchAgent).
+- Current v0.2 source is not installed or deployed by this workflow.
+- Real service, broker, topology, and route state belong in the private
+  operator repository; do not copy them into this public file.
 - Review model: `gpt-5.6-sol` via `--provider openai-codex` (ChatGPT sub,
   authenticated; `codex` model name returns 400 — must use `gpt-5.6-sol`).
 - Public-content policy: never commit real operator identity (hosts, models,

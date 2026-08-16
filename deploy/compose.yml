@@ -1,35 +1,62 @@
+name: anvil-events-dev
+
 services:
-  # NATS JetStream broker — required by the events daemon
   nats:
     image: nats:2.11-alpine
-    command: ["-js", "-m", "8222"]
-    ports:
-      - "127.0.0.1:4222:4222"   # client (loopback-only publication)
-      - "127.0.0.1:8222:8222"   # monitoring (loopback-only)
+    command: ["-js", "-sd", "/data", "-a", "0.0.0.0", "-m", "8222"]
     restart: unless-stopped
     volumes:
       - anvil-nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8222/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
 
-  # anvil-events daemon (subscriber + journal) — container shape (ADR-0002)
-  events:
+  stream-init:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    image: anvil-events:latest
+    image: anvil-events:dev
     depends_on:
-      - nats
-    # journal lives on the HOST, never inside the container
+      nats:
+        condition: service_healthy
+    environment:
+      ANVIL_EVENTS_NATS_URL: nats://nats:4222
+      ANVIL_EVENTS_TRANSPORT_MODE: development
+      ANVIL_EVENTS_DEVELOPMENT_PLAINTEXT_HOSTS: nats
+    command: ["broker-init", "/app/deploy/nats-stream.json", "--wait", "30"]
+    restart: "no"
+
+  events:
+    image: anvil-events:dev
+    depends_on:
+      stream-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:9877:9877"
     volumes:
       - anvil-events-root:/var/lib/anvil/events
     environment:
-      # service DNS: the broker is reachable at `nats:4222` inside the network
       ANVIL_EVENTS_NATS_URL: nats://nats:4222
-      ANVIL_EVENTS_ALLOWED_PRODUCERS: ${ANVIL_EVENTS_ALLOWED_PRODUCERS:?set trusted producers}
-      ANVIL_EVENTS_ROOT: /var/lib/anvil/events
-    ports:
-      - "127.0.0.1:9877:9877"   # health: host-loopback -> container 0.0.0.0
+      ANVIL_EVENTS_TRANSPORT_MODE: development
+      ANVIL_EVENTS_DEVELOPMENT_PLAINTEXT_HOSTS: nats
     restart: unless-stopped
-    # cross-host: override ANVIL_EVENTS_NATS_URL to the fleet broker over tailnet
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9877/ready', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    command:
+      - --root
+      - /var/lib/anvil/events
+      - serve
+      - --config
+      - /app/deploy/development-node.toml
+      - --durable
+      - node-b-events
+      - --health-host
+      - 0.0.0.0
 
 volumes:
   anvil-events-root:

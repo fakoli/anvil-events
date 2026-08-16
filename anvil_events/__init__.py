@@ -1,2 +1,3 @@
-"""anvil-events — fleet lifecycle event bus and journal (stdlib-only spike)."""
-__version__ = "0.1.0"
+"""Local-first desired-state convergence events for small fleets."""
+
+__version__ = "0.2.0"

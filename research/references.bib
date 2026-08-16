@@ -6,7 +6,7 @@
   archivePrefix = {arXiv},
   primaryClass = {cs.DC},
   url       = {https://arxiv.org/abs/1911.11286},
-  note      = {eBay/Netskope; TLA+-verified in-order exactly-once WAL replay; basis for anvil-events outbox recovery protocol}
+  note      = {TLA+-modeled in-order exactly-once WAL replay; used here only for safety, liveness, recovery, and target-state vocabulary because anvil-events delegates replay to JetStream}
 }
 
 @article{trofimov2019delivery,
@@ -39,5 +39,5 @@
   archivePrefix = {arXiv},
   primaryClass = {cs.DB},
   url       = {https://arxiv.org/abs/2011.09753},
-  note      = {causal consistency = acyclic causality graph, checkable automatically; basis for anvil-events verify command}
+  note      = {Defines model-specific history and bad-pattern checks; anvil-events lacks the required read, write, value, and object semantics and claims dependency-DAG integrity only}
 }

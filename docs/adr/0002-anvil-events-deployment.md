@@ -1,12 +1,17 @@
 # ADR-0002 — anvil-events deployment: local daemon or container
 
-- **Status:** Proposed (drafted 2026-08-13; operator direction)
+- **Status:** Superseded in detail by ADR-0003; the one-artifact/two-runtime
+  decision remains accepted.
 - **Date:** 2026-08-13
 - **Relates to:** ADR-0001 (event bus, journal, JetStream); the controller's
   dual deployment (native process on macOS hosts, Docker container on Windows
   hosts); the gateway/dashboard launchd precedent on the ingress host
 
 ## Context
+
+> Historical note: v2 replaces the JSONL runtime, per-host broker assumption,
+> and plaintext fleet posture. Current templates use SQLite, one managed
+> JetStream recovery log, and authenticated TLS in fleet mode.
 
 The family's operator layer already solves a two-shape deployment problem: the
 controller runs as a **native process** (launchd) on hosts without a container

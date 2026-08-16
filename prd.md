@@ -1,210 +1,230 @@
-# Project: anvil-events — fleet lifecycle event bus and journal
+# Product requirements: generic fleet convergence events
 
-## Summary
+## Problem
 
-A typed, append-only **event bus + journal** for the Anvil family (anvil,
-anvil-serving). Every lifecycle change on any host — serve up/down, profile
-enter/leave, promotion applied, config adopted, repo synced — publishes a
-versioned JSON event to a subject every subscriber can hear, and appends the
-same record to a durable journal. It is the third wheel the family is missing:
-anvil coordinates *who*, anvil-serving serves *what*, anvil-events answers
-*"what happened, when, and who needs to know"*.
+A small fleet can have one system that owns routing or model desired state and
+several heterogeneous systems that consume it: agent gateways, compute nodes,
+evaluation workers, or specialist services. Today an operator often visits
+each host after a model promotion or route change and edits client state by
+hand. Missed updates leave a fleet internally inconsistent.
 
-The event log is the **journal**, never the desired state. The repo (declared
-spec) and the event log (journal of what actually happened) do not compete —
-events fill the gap that today requires a 20-minute git-archaeology session to
-answer "what's actually running on node-a?"
+The product must let an authority record one immutable desired revision and let
+each node converge the resource it owns. The private Anvil Serving deployment
+is the reference design, not product-specific code.
 
 ## Goals
 
-- **G1 — Publish on lifecycle change.** `serve.up/down`, `profile.enter/leave`,
-  `promote.applied`, `config.adopted`, `repo.synced` emit a typed event.
-- **G2 — Subscribe from anywhere.** Any host (node-a, node-b, node-c, an agent)
-  can subscribe to subjects it cares about and react — including the gateway
-  host refreshing its fact/memory on `anvil.fleet.>`.
-- **G3 — Durable journal.** Events are append-only and replayable; a late
-  subscriber can catch up on recent history, independent of git state.
-- **G4 — Zero hard dependency.** `anvil-events` is stdlib-only (like
-  anvil-serving). anvil and anvil-serving get an optional `events` extra that
-  shells out to it if present; everything works when it's absent.
-- **G5 — Boundaries stay.** Credentials (NATS auth, tokens) are env-var names,
-  never values in config or code. Public repo never holds operator identity.
-
-## Reliability contract (revised)
-
-The journal is authoritative and local-first; publishing is best-effort ON
-TOP of the journal, never a substitute for it. Every producer writes the
-event to its **local transactional outbox** (append-only JSONL, fsync'd) as the
-*durable record that the change happened*, BEFORE any publish attempt. The
-publish is then attempted; if it fails, the event remains in the outbox and a
-**visible `degraded` status** is exposed (`anvil events status` reports
-pending/failed outbox entries). Lost events are therefore *distinguishable*
-from "nothing happened": if the outbox is empty and the producer succeeded,
-there is genuinely nothing; if an event failed to deliver, it is
-`pending`/`failed` — **never silently discarded while enabled.**
-
-A subscriber that never acks (JetStream consumer ACK) does NOT affect the
-producer outbox — publish persistence and consumer delivery are independent;
-an unacked consumer is that consumer's backlog to replay, not a producer
-failure.
-
-- An enabled event that cannot be journaled (disk failure) **fails the
-  operation** (or aborts with a clear error) rather than proceeding silently.
-- A journaled event that cannot be published is `pending` — surfaced via
-  `anvil events status` and an `event.degraded` record, and never dropped
-  while `enabled`. (Automatic retry with backoff is the M4 producer path;
-  M2 surfaces the pending state honestly.)
-- `[events] enabled: false` is the ONLY way a change produces no event, and it
-  is explicit, not default-silent.
+1. Record lifecycle and desired-state events durably before attempting network
+   delivery.
+2. Deliver through a recoverable fleet log and catch up after disconnection.
+3. Reconcile narrow node-owned resources with preview, policy, verification,
+   rollback, and durable outcomes.
+4. Run from one stdlib-only package on Windows, macOS, and Linux, natively or
+   in a thin container.
+5. Keep public product contracts separate from private topology, credentials,
+   active routes, and deployment evidence.
 
 ## Non-goals
 
-- **Not a generic pub/sub platform.** NATS/Kafka exist; the value is the Anvil
-  lifecycle contract + journal, not the transport.
-- **Not a new source of truth.** The repo remains the declared spec; events
-  never silently override it. A divergence (repo vs live) is a *recorded*
-  event, not an automatic correction.
-- **Not K3s/etcd/ZooKeeper.** This is single-writer-at-a-time push-on-event,
-  not multi-writer consensus. No leader election, no quorum.
-- **Not a config store.** No CRDT merging, no distributed files. Files stay in
-  the repo; events describe their lifecycle.
+- Distributed consensus, leader election, or multi-writer merging.
+- Raw file synchronization or arbitrary command execution.
+- Replacing an artifact/source repository or the serving control plane.
+- Git add/commit/push from an event consumer.
+- A global total order or globally exactly-once external side effects.
+- Treating tailnet membership as producer authentication.
 
-## Ordering and identity (revised)
+## Reference roles
 
-Events are **per-producer ordered**, not globally ordered. Each event carries:
+- `route-authority`: owns a resource generation and exact desired artifact.
+- `gateway-agent`: consumes routes and updates agent/provider client state.
+- `compute-service`: consumes the subset of serving configuration it owns.
+- `evaluation-worker`: observes revisions without hosting model state.
+- `specialist-service`: consumes a narrow voice/media/other resource.
 
-- `event_id` — unique (host-producer-seq), idempotent replay key.
-- `producer` — stable producer identity (host + role, e.g. `node-a:serves`).
-- `producer_seq` — monotonically increasing per producer.
-- `observed_at` / `emitted_at` — event-time vs publish-time, so clock skew is
-  explicit.
-- `correlation_id` — links cause/effect (e.g. a `promote.applied` and its
-  `config.adopted` + `repo.synced` siblings share one).
-- `schema` — schema URI.
+No public artifact may contain real role assignments, node addresses, active
+routes, credentials, or operator paths.
 
-Consumers that need global ordering must reconstruct it via `observed_at` +
-per-producer causal chains; no global sequencer is claimed. Duplicate
-delivery is handled by idempotent consumers on `event_id` (last-write-wins by
-`producer_seq`).
+## Architecture
 
-## Outbox atomicity and retention (revised)
+### Domain
 
-**Atomicity.** The word "transactional" on the outbox does NOT imply a
-distributed transaction. The concrete semantics:
+V2 envelopes are closed at the top level but extensible by dotted `kind`.
+`producer` is node-owned (`node-a:router` belongs to `node-a`), identity is
+`producer + producer_seq`, and `subject` is derived from node and kind.
 
-- The producer serializes the lifecycle side effect and the journal append
-  **in one critical section** (a single per-producer file lock). Tens to
-  hundreds of milliseconds of lock hold; no second phase.
-- Order: (1) acquire lock, (2) apply lifecycle side effect, (3) append +
-  fsync the event, (4) release lock.
-- If (3) fails (disk error), the operation **aborts with a clear error** — the
-  side effect is either rolled back by the caller or explicitly declared
-  applied-but-unjournaled in the CLI output; it is never silent.
-- The outbox file is append-only; a torn last line (crash) is detected on next
-  open (trailing newline check) and the partial line is dropped, with a
-  `event.degraded` record.
+`state.desired` requires:
 
-**Retention (concrete).**
+- `resource`: portable logical identity;
+- `generation`: positive authority-assigned integer;
+- `revision`: immutable source revision;
+- `content_sha256`: digest of the exact artifact bytes;
+- `adapter`: locally registered narrow adapter;
+- `artifact`: logical reference resolved through a configured source;
+- optional `targets`: explicit node tokens.
 
-- The durable producer record is the **local outbox** (fsync'd append). An
-  entry moves to `events/archive/` only after a positive JetStream PubAck.
-  `Nats-Msg-Id=event_id` makes retries idempotent; the daemon retries pending
-  entries after reconnect and health exposes retry/ack/broker state.
-- Archive files are retained **90 days** and then deleted by a daily sweep
-  (`anvil events gc` / the operator cron). JetStream stream retention: **7
-  days** of history for late subscribers (configurable, M4), with `max_age` +
-  `DiscardOld`; the archive is the long-term source, JetStream is the
-  short-term window.
-- No event is deleted from the archive before its retention age; the sweep
-  logs deletions to the day's journal line.
-- Size guard: if the archive exceeds 500 MB, the sweep rotates the current-day
-  file and flags `event.degraded`. Only files older than the 90-day floor may
-  be removed. If retained young history prevents reaching the cap, GC returns
-  nonzero with `unresolved_oversize` rather than violating retention.
+Credential-shaped keys, non-JSON numbers, capability URLs in event-controlled
+fields, arbitrary local paths, duplicate causes, and oversized payloads fail
+validation.
 
-## Requirements
+### Local state and acceptance
 
-- **R001 — Typed event vocabulary (normative).** Events are versioned JSON with
-  the envelope above. Kinds are frozen in the vocabulary spec (see
-  `docs/event-vocabulary.md`): `serve.up`, `serve.down`, `profile.enter`,
-  `profile.leave`, `promote.applied`, `promote.rolled_back`,
-  `config.adopted`, `repo.synced`, `host.status`, `divergence`,
-  `event.degraded`. The vocabulary is the single canonical kind list; adding a
-  kind requires a schema bump + compatibility test across the repos.
-- **R002 — Publish on lifecycle change (outbox-first).** Lifecycle commands in
-  anvil-serving (`serves up/down`, `profile enter/leave`, `promote`) append to
-  the outbox and publish best-effort; `[events]` gate is explicit. Never blocks
-  or fails the operation EXCEPT when the local outbox write fails while
-  enabled.
-- **R003 — Subscribe from anywhere.** `anvil events sub <subject>` receives
-  events; `--count`/`--timeout` for bounded use.
-- **R004 — Durable journal + outbox.** The outbox is the authoritative local
-  journal; the checked-in JetStream stream configuration provides durable
-  server-side subjects for late subscribers and multi-host replay. Journal
-  authority is the **producer's local outbox**; JetStream is a replicated
-  mirror for fleet consumers. Both are append-only, rotation + retention
-  defined (see ADR-0001).
-- **R005 — the gateway/node-b adapter (validated).** A lightweight subscriber on node-b
-  ingests `anvil.fleet.>` into the gateway fact_store/memory via a script + cron,
-  but only after validating `producer`/`event_id`/kind against the vocabulary
-  and configured producer + payload allowlists; forged/unknown/unauthorized
-  events are dropped, not stored.
-- **R006 — Repo-sync event.** After a promotion that changes the operator home,
-  the commit-push (config-adopt) emits `config.adopted` + `repo.synced` sharing
-  a `correlation_id`; the transaction links them (the promote either yields
-  both or records the partial state).
-- **R007 — No credential in config.** `[events]` carries env-var *names*
-  (`ANVIL_EVENTS_NATS_URL` etc.), never values.
-- **R008 — Hermetic tests.** Unit tests use fakes/stdlib; no real network in CI.
-  Compatibility tests pin the vocabulary across anvil + anvil-serving.
+SQLite owns the event journal, producer sequences, pending delivery, PubAck
+evidence, cursors, operation records, reconciliation attempts, applied
+generations, facts, quarantine, and migration provenance. It uses WAL,
+`synchronous=FULL`, foreign keys, application ownership, and immediate write
+transactions.
 
-## Verification / acceptance
+`record` commits the idempotency key and canonical event in one transaction.
+It never contacts the broker. A conflicting event ID, producer sequence,
+idempotency key, resource generation, or PubAck fails closed.
 
-- **V1 — Outbox-then-publish round-trip.** Publish `promote.applied` with the
-  outbox write; simulate a publish failure → event stays `pending`, `status`
-  shows `degraded`, retry delivers, outbox clears.
-- **V2 — No-event is distinguishable.** With the publisher down and events
-  enabled, `anvil events status` reports `pending`/`failed` — never silent.
-- **V3 — Lifecycle integration.** `anvil-serving serves up` emits `serve.up`
-  (outbox-first) with correct host/kind/model; a disabled `[events]` produces
-  nothing AND is explicit.
-- **V4 — Late subscriber catch-up (JetStream).** After N events, a new
-  subscriber replays them in per-producer order via JetStream durable subjects.
-- **V5 — Validation gate.** A forged `host.status` (bad producer/unknown kind)
-  is dropped by the the gateway adapter, not stored.
-- **V6 — Drift flag.** A live-vs-repo mismatch emits a `divergence` event
-  (recorded, not corrected).
+Legacy POSIX JSONL is read-only. Explicit migration locks or requires an
+offline source, rejects torn/malformed/equivocating input, fingerprints the
+source, imports in one transaction, records provenance, verifies SQLite
+integrity, re-fingerprints the source, and never deletes it.
 
-## Milestones (revised — repo & contract FIRST)
+### Transport
 
-1. **M1 — Repository + normative schema + CI.** Create `anvil-events` repo;
-   freeze the v1 JSON Schema + kind list; add vocabulary compatibility tests;
-   set up CI (lint, unit, schema conformance).
-2. **M2 — Core CLI (stdlib) + outbox.** `anvil events pub/sub/replay/status`
-   with local outbox (fsync'd JSONL, torn-line recovery) and degraded status
-   (`event.degraded` on publish failure); hermetic tests (fakes, no network).
-   Retry-with-backoff and the JetStream stream/consumer config are M4.
-   **Includes the
-   `serve` daemon verb (subscriber + journal) and `deploy/` sample runtimes —
-   launchd/systemd units + Dockerfile + compose (ADR-0002).**
-3. **M3 — anvil-serving `[events]` seam.** Outbox-first best-effort publish
-   after lifecycle commands; compatible with M2; docs + CLI audit; tests.
-4. **M4 — Private operator adapter.** Real NATS publisher (dev on node-b),
-   commit-push-on-promote wrapper emitting correlation-linked
-   `config.adopted`+`repo.synced`, the gateway subscriber with validation gate +
-   rollback + observability. Deployed after M2/M3 prove out.
-5. **M5 — Rollout + observability.** `anvil events status` on each host,
-   monitoring of `event.degraded`, retention/rotation policy enforced.
+An independent worker selects indexed pending rows, publishes with
+`Nats-Msg-Id=event_id`, and changes pending state only while recording positive
+PubAck stream/sequence evidence and the producer cursor in one transaction.
+Failure leaves the canonical event pending with bounded diagnostic state.
 
-## Open questions
+- Development mode permits `nats://` on literal loopback or an explicitly
+  allowlisted single-label host in an isolated container network.
+- Fleet mode requires `tls://`, server-name verification, and username/password
+  or mTLS. TLS-first is explicit; there is no downgrade.
+- The actual broker subject must equal the envelope subject.
+- Per-node server ACLs bind principals to node subject prefixes and fixed
+  durable-consumer control subjects.
 
-- **O1 — Transport:** NATS JetStream (chosen; proven spike) vs pure
-  tailnet+git-bundle. JetStream is the default; revisit if a host cannot run it.
-- **O2 — Journal home:** resolved as producer-local outbox (authoritative) +
-  JetStream mirror (fleet). Server history defaults to seven days; local
-  archive retention defaults to 90 days.
-- **O3 — Repo-vs-journal precedence** when they disagree: journal wins for
-  *what happened*; repo wins for *desired*; divergence is a recorded event.
-  Needs operator sign-off.
-- **O4 — Security posture:** tailnet-only TLS by default; producer identity via
-  per-host token (env); per-subject ACLs on JetStream. Threat model in ADR.
+JetStream is the replicated log, deduplication window, and recovery mechanism.
+The default stream does not expire history because a newly enrolled node or a
+node offline beyond an arbitrary window must still observe current desired
+state. Finite retention is valid only after a tested desired-state snapshot or
+per-resource compaction mechanism exists. Referenced immutable artifacts must
+remain available for every replayable desired generation.
+The product does not reimplement the LogPlayer paper's in-memory target queue.
+
+### Reconciliation algorithm
+
+For each desired event on a node:
+
+1. Validate schema, authorized producer, actual subject, target, resource,
+   generation, revision, adapter, and digest.
+2. Journal the desired event before external work.
+3. Claim `(node, resource, generation)` durably. Identical replay is a no-op;
+   stale generations are superseded; generation equivocation fails closed.
+4. Resolve the logical artifact from the locally configured directory or
+   authenticated HTTPS controller source.
+5. Require exact revision and SHA-256 bytes.
+6. Run adapter preview and exact authority-producer/resource/adapter policy.
+7. If policy denies, record `reconcile.awaiting_approval` and leave the broker
+   delivery unacknowledged for later policy change/redelivery.
+8. Apply only locally configured state, verify observed bytes/state, and roll
+   back a verification failure.
+9. Durably record applied/failed/indeterminate state and an idempotent outcome
+   event caused by the desired event.
+10. ACK the desired delivery only after durable local processing.
+
+The built-in managed-file adapter uses a configured destination, validates
+JSON/TOML when requested, refuses destination symlinks, writes a same-directory
+temporary file, fsyncs, atomically replaces, verifies the digest, and can roll
+back within the running attempt. A crash during a non-atomic external adapter
+is `INDETERMINATE` and is never silently retried.
+
+## Reliability contract
+
+| Axis | Contract |
+|---|---|
+| Local acceptance | Exactly one canonical event per idempotency key. |
+| Broker delivery | At least once; PubAck proves stream persistence. |
+| Local journal | One canonical row per event ID; conflicts rejected. |
+| Ordering | Per producer plus per-resource generation; no global sequence. |
+| External application | Idempotent at least once unless an adapter proves stronger atomicity. |
+| Consistency | Desired bytes are revision- and digest-bound; outcome follows verify/rollback. |
+| Determinism | Canonical JSON and conflict rules make replay decisions repeatable. |
+| Liveness | After faults stop, policy permits, and replayable artifacts remain available, healthy subscribed nodes converge. |
+
+## Research alignment
+
+- **LogPlayer (2019):** provides a useful safety/liveness/target-cursor
+  vocabulary. Its algorithm assumes a single indexed WAL and atomic target
+  consumed index. This product instead delegates replay/redelivery to
+  JetStream and keeps an idempotent node apply ledger. No LogPlayer
+  implementation or exactly-once side-effect claim is made.
+- **Delivery, consistency, determinism (2019):** motivates stating guarantees
+  by separate axes. The table above is normative.
+- **Checking Causal Consistency (2020/2021):** the implemented checker only
+  tests acyclicity of explicit causes and producer order. Without object
+  reads/writes, returned values, and model-specific bad patterns, it is
+  dependency-DAG integrity—not causal-consistency conformance.
+- **Lamport's Arrow of Time (2026 preprint):** reinforces the decision not to
+  turn local clocks into global truth. It is context, not a correctness proof.
+
+See [`research/2026-08-12-theory-map.md`](research/2026-08-12-theory-map.md).
+
+## Security requirements
+
+1. Event bodies contain no credential values or capability-bearing URLs.
+2. Endpoint URLs contain no userinfo, query, or fragment.
+3. Fleet transport has TLS verification and an authenticated node principal.
+4. Principal ACLs restrict publish node prefix, inboxes, fixed delivery
+   subject, fixed durable-create API, and ACK subjects.
+5. Node config binds exact authority producers and resources to adapters and
+   configured destinations.
+6. Artifact HTTP rejects redirects, bounds response size, requires exact
+   revision metadata, and obtains any bearer token from a named environment
+   variable at request time.
+7. Health reports local acceptance separately from fleet readiness and does
+   not print broker URLs or credentials.
+8. Public and private repository ownership boundaries are mandatory.
+
+## Acceptance criteria
+
+### Source gates
+
+- No Python module exceeds 300 lines without a documented exception.
+- `ruff check .` passes.
+- Hermetic `unittest` suite passes with `ResourceWarning` promoted to error.
+- Native CI passes on Windows, macOS, and Linux for Python 3.11 and 3.13.
+- Wheel and source distribution build and the installed wheel CLI starts.
+- Legacy source hashes are unchanged after success and every failed migration
+  probe.
+
+### Broker and failure gates
+
+- Development Compose creates or exactly verifies `ANVIL_EVENTS`, then proves
+  local record → PubAck → durable consumer → reconcile → outcome.
+- Broker outage preserves pending work; restart catches up without duplicate
+  external apply.
+- Forged producer, actual/envelope subject mismatch, unknown adapter,
+  conflicting generation, wrong revision, and wrong digest all fail closed.
+- TLS standard-upgrade and TLS-first paths both pass; a plaintext fleet
+  endpoint and a fleet principal without auth fail before CONNECT credentials.
+- Negative ACL probes prove each node cannot publish another node's prefix.
+
+### Private rollout gates
+
+1. Resolve public/private workspace ownership and pin exact public revision.
+2. Author private manifests and credentials references in a clean private
+   worktree; no real topology enters public files.
+3. Preview every adapter and prove rollback without altering active routing.
+4. Install a non-authoritative canary and record disconnect/catch-up evidence.
+5. Enable the route authority lifecycle seam only after local record failure
+   semantics pass on its actual OS/runtime.
+6. Stage gateway/agent, worker, and specialist roles separately.
+7. Prove one desired route generation yields verified local client state and a
+   correlated outcome on every intended node.
+8. Keep install/restart/route/promotion authorization separate from source
+   merge.
+
+## Delivery milestones
+
+| Milestone | Scope | Current status |
+|---|---|---|
+| R1 | Baseline audit, research correction, composable domain/storage | Implemented locally; review and CI pending |
+| R2 | Secure transport, runtime, reconciliation, portable deployment | Implemented locally; Compose fault proof passed; review/CI pending |
+| R3 | Public Anvil Serving lifecycle seam using local `record` | Pending |
+| R4 | Private node manifests, artifact/controller adapter, canary | Pending separate approval |
+| R5 | Staged fleet rollout and live acceptance | Pending separate approval |

@@ -3,33 +3,37 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>ai.anvil.events</string>
-
+    <string>dev.anvil.events</string>
     <key>ProgramArguments</key>
     <array>
         <string>/opt/homebrew/bin/anvil-events</string>
-        <string>serve</string>
         <string>--root</string>
         <string>/Users/REPLACE_ME/.anvil/events</string>
-        <string>--subject</string>
-        <string>anvil.fleet.&gt;</string>
+        <string>serve</string>
+        <string>--config</string>
+        <string>/Users/REPLACE_ME/.config/anvil-events/node.toml</string>
+        <string>--durable</string>
+        <string>node-events</string>
     </array>
-
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ANVIL_EVENTS_TRANSPORT_MODE</key>
+        <string>fleet</string>
+        <key>ANVIL_EVENTS_NATS_URL</key>
+        <string>tls://broker.example.invalid:4222</string>
+        <key>ANVIL_EVENTS_TLS_HANDSHAKE_FIRST</key>
+        <string>true</string>
+        <key>ANVIL_EVENTS_TLS_CA_FILE</key>
+        <string>/Users/REPLACE_ME/.config/anvil-events/ca.pem</string>
+        <key>ANVIL_EVENTS_TLS_CERT_FILE</key>
+        <string>/Users/REPLACE_ME/.config/anvil-events/client.pem</string>
+        <key>ANVIL_EVENTS_TLS_KEY_FILE</key>
+        <string>/Users/REPLACE_ME/.config/anvil-events/client-key.pem</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>ANVIL_EVENTS_NATS_URL</key>
-        <string>nats://127.0.0.1:4222</string>
-        <!-- ANVIL_EVENTS_ALLOWED_PRODUCERS intentionally ABSENT:
-             unset means DEFAULT-DENY (no producers authorized). Set it in
-             an EnvironmentVariables override or a profile to authorize the
-             fleet producers (comma-separated "host:service" pairs). -->
-    </dict>
-
     <key>StandardOutPath</key>
     <string>/tmp/anvil-events.out.log</string>
     <key>StandardErrorPath</key>

@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+build
+dist
+*.egg-info
+**/__pycache__
+*.py[cod]
+.coverage
+.ruff_cache
+events
+graphify-out
+tests

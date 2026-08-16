@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anvil.dev/schemas/events/v2.json",
+  "title": "Anvil Events generic convergence envelope v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version", "event_id", "producer", "producer_seq", "observed_at",
+    "emitted_at", "correlation_id", "schema", "node", "kind", "subject",
+    "payload", "causes"
+  ],
+  "properties": {
+    "version": {"const": 2},
+    "event_id": {"type": "string", "minLength": 1, "maxLength": 320},
+    "producer": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*$"
+    },
+    "producer_seq": {"type": "integer", "minimum": 1},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "emitted_at": {"type": "string", "format": "date-time"},
+    "correlation_id": {"type": ["string", "null"], "maxLength": 256},
+    "schema": {"const": "https://anvil.dev/schemas/events/v2.json"},
+    "node": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "kind": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)+$"
+    },
+    "subject": {"type": "string", "minLength": 1, "maxLength": 256},
+    "payload": {"type": "object"},
+    "causes": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "maxLength": 256},
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "resource": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:-]*)*$"
+    },
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "adapter": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9_-]+$"
+      }
+    },
+    "desiredPayload": {
+      "type": "object",
+      "required": [
+        "resource", "generation", "revision", "content_sha256", "adapter",
+        "artifact"
+      ],
+      "properties": {
+        "resource": {"$ref": "#/$defs/resource"},
+        "generation": {"type": "integer", "minimum": 1},
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$"
+        },
+        "content_sha256": {"$ref": "#/$defs/digest"},
+        "adapter": {"$ref": "#/$defs/adapter"},
+        "artifact": {"$ref": "#/$defs/resource"},
+        "targets": {"$ref": "#/$defs/targets"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"kind": {"const": "state.desired"}}},
+      "then": {"properties": {"payload": {"$ref": "#/$defs/desiredPayload"}}}
+    }
+  ]
+}

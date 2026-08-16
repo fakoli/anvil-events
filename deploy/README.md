@@ -1,69 +1,86 @@
-# anvil-events deployment — one artifact, two runtimes (ADR-0002)
+# Deployment shapes
 
-The controller set the pattern: **native process where no container runtime
-exists, Docker container where the stack requires it.** anvil-events does the
-same. `anvil events serve` is the single daemon verb; `deploy/` holds the thin
-wrappers.
+The package has one `serve` runtime. The files here wrap it as a native macOS
+launchd service, native Linux systemd service, or a thin container. These are
+portable templates, not authorization to install or restart a real node.
 
-## When to use which
-
-| Host kind | Runtime available | Shape | Files |
-|---|---|---|---|
-| macOS (no Docker needed) | — | **native daemon** (launchd) | `ai.anvil.events.plist` |
-| Linux (no Docker) | — | **native daemon** (systemd) | `anvil-events.service` |
-| Windows (Docker Desktop required) | Docker | **container** | `Dockerfile` + `compose.yml` |
-
-## Daemon mode (no Docker)
-
-```bash
-# macOS — install the launchd unit
-pip install anvil-events
-cp deploy/ai.anvil.events.plist ~/Library/LaunchAgents/
-# edit the REPLACE_ME username in the plist, then:
-launchctl load ~/Library/LaunchAgents/ai.anvil.events.plist   # or bootstrap
-
-# Linux — install the systemd unit
-cp deploy/anvil-events.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now anvil-events
-```
-
-## Container mode (Docker present — the Windows hosts)
+## Development Compose
 
 ```bash
 docker compose -f deploy/compose.yml up -d --build
+docker compose -f deploy/compose.yml ps
+curl http://127.0.0.1:9877/ready
 ```
 
-- The **journal lives on the host** (`anvil-events-root` volume), never inside
-  the container — the container is stateless and rebuild-safe.
-- Composed with a nats-server broker; cross-host, point
-  `ANVIL_EVENTS_NATS_URL` at the fleet broker over tailnet.
+The broker is reachable only inside the isolated Compose network; no client
+port is published to the host. `stream-init` creates `ANVIL_EVENTS` or fails if
+an existing stream differs. The events service loads
+`development-node.toml`, consumes desired events, and applies the single
+synthetic `routing/clients` resource under its volume.
 
-## Broker
+This shape is intentionally unauthenticated and must not be exposed to a LAN or
+tailnet. It is a reproducible development proof only.
 
-nats-server follows the same rule: native daemon where no Docker (or a
-lightweight loopback broker), container where Docker is mandatory.
+## Fleet mode
 
-JetStream being enabled is not sufficient: the broker must have the checked-in
-file-backed stream that captures the fleet subjects. Provision it idempotently
-with the NATS CLI after starting the broker:
+Fleet mode requires all of the following:
 
-```bash
-nats stream add --config deploy/nats-stream.json
-nats stream info ANVIL --json
+1. one managed JetStream broker/recovery log reachable through the intended
+   private network;
+2. `tls://` with server-name verification;
+3. mTLS with certificate identity mapping per node in the supplied template;
+4. publish ACL bound to `anvil.events.v2.<node>.>`;
+5. fixed durable name and matching consumer API, delivery, inbox, and ACK ACLs;
+6. a private node TOML with real artifact/controller source, exact producer
+   allowlist, exact authority-producer/resource/adapter binding, destination,
+   validation, and policy;
+7. separately managed service environment and credential files.
+
+`nats-fleet.example.conf` shows a sanitized two-node mTLS identity-map shape.
+Each client certificate identity must map exactly to its configured NATS user.
+Real broker configuration, identities, addresses, credential values, and node
+manifests belong in the private operator repository.
+
+For the TLS-first sample, clients set:
+
+```text
+ANVIL_EVENTS_TRANSPORT_MODE=fleet
+ANVIL_EVENTS_NATS_URL=tls://broker.example.invalid:4222
+ANVIL_EVENTS_TLS_HANDSHAKE_FIRST=true
+ANVIL_EVENTS_TLS_CA_FILE=/path/to/ca.pem
+ANVIL_EVENTS_TLS_CERT_FILE=/path/to/node-b.pem
+ANVIL_EVENTS_TLS_KEY_FILE=/path/to/node-b-key.pem
 ```
 
-The contract in `deploy/nats-stream.json` is `ANVIL` → `anvil.fleet.>`, file
-storage, `DiscardOld`, 7-day history, and a 2-minute message-ID deduplication
-window. Producers retain their local outbox entry until JetStream returns a
-positive PubAck; the daemon retries pending entries after reconnect.
+The URL never contains credentials. In this template the verified certificate
+identity maps to the NATS user, so the client does not send a separate username
+or password. The client also supports username/password for brokers configured
+with that separate authentication design; do not mix it with the supplied
+certificate-identity template without testing the broker's mapping and ACL
+behavior.
 
-Set `ANVIL_EVENTS_ALLOWED_PRODUCERS` to a comma-separated list of exact
-producer identities. The daemon and validated ingestion are default-deny when
-this allowlist is empty; broker publish ACLs remain defense in depth.
+## Native services
 
-## Verify
+The systemd unit expects `/etc/anvil-events/events.env` and
+`/etc/anvil-events/node.toml`. The launchd template uses mTLS path references
+and a placeholder broker name because launchd has no systemd-style
+`EnvironmentFile`.
 
-```bash
-anvil events serve --help            # the verb is the same in both shapes
-curl -s http://127.0.0.1:9877/       # includes pending, PubAck retries, broker state
-```
+Before enabling either unit:
+
+- install the exact reviewed wheel;
+- run `anvil-events --root <root> init` as the service user;
+- validate the private node config without changing an active destination;
+- create/verify the stream with the separate admin principal;
+- test local `record`, broker-offline pending status, and reconnect;
+- obtain the separate install/restart gate.
+
+## Health semantics
+
+- `/live`: local store is readable and workers are alive.
+- `/ready`: `/live` plus the durable subscriber is connected.
+- `/`: full bounded JSON snapshot.
+
+Readiness does not prove an adapter changed a real application or that the
+application reloaded it. A rollout needs a desired event, exact local observed
+state, and correlated outcome evidence.

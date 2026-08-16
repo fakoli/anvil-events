@@ -1,142 +1,113 @@
-# anvil-events TLA+-style invariants
+# Executable invariants
 
-> Formal invariant list for the outbox + LogPlayer-style delivery machinery.
-> Written in the style of a TLA+ spec (invariants that must NEVER be falsified,
-> plus the test that proves each one). Derived from the LogPlayer paper
-> (arXiv:1911.11286 §2.4–2.5) and the causal-consistency paper (arXiv:2011.09753).
-> These convert the reviewer charge "reliability is internally impossible"
-> into concrete, testable guarantees.
+These are implementation invariants, not a TLA+ model or proof. Each invariant
+has a hermetic regression and a separate live gate where external systems are
+involved.
 
-## Notation
+## INV-1: immutable event identity
 
-- `state` is the durable producer outbox (append-only JSONL, fsync'd), the
-  PubAcked archive, the deduplicated subscriber journal, and per-target cursors.
-- `TargetQueue` = per-target LogPlayer state machine (S/RF/FC/N).
-- A `degraded` event means pending > 0 (an event exists that has not been acked).
-- "Durably mirrored" = JetStream returned a positive PubAck for that event.
+One `event_id` and one `(producer, producer_seq)` identify one canonical
+envelope. A conflicting duplicate aborts the transaction.
 
----
+Evidence: storage identity/sequence collision tests; migration conflict tests.
 
-## Invariants
+## INV-2: atomic local acceptance
 
-### INV1 — No invented history (outbox atomicity)
+The idempotency key, operation record, producer sequence, and pending event are
+committed together. Repeating the same key and intent returns the same event;
+changing intent fails.
 
-```
-Always: if event e was journaled with side effect s, then (e, s) were
-written under ONE critical section (the per-producer flock). The journal
-never records an event whose side effect did not happen, and never omits
-a side effect that did.
-```
+Evidence: concurrent sequence and atomic-record tests.
 
-**Test:** `test_*_order*` — emission holds the flock for read/compute/append;
-`ack()` archives BEFORE removing from pending (crash → duplicate, never loss).
+## INV-3: PubAck gates delivery completion
 
-### INV2 — At-least-once, never lost
+An unknown event cannot be acknowledged. For a known pending event, PubAck
+evidence, `acked` state, and cursor update commit in one SQLite transaction.
+Conflicting evidence fails closed.
 
-```
-Always: if an event is journaled (pending) and later acked, the ack is
-recorded in the archive FIRST; the pending entry is removed only after.
-A crash between = duplicate archive entry, which consumers dedup by
-event_id. No event is ever removed before it is durably archived.
-```
+Evidence: PubAck/cursor, unknown event, and conflicting evidence tests. A real
+broker PubAck/fault proof remains a Compose/live gate.
 
-**Test:** `test_ack_archive_first_then_remove_pending`,
-`test_pending_archived_only_after_puback`, `test_puback_failure_keeps_pending`.
+## INV-4: poison data cannot block valid state silently
 
-### INV3 — Duplicate prevention after reconnect (LogPlayer term)
+Malformed pending data is quarantined, removed from the pending role, and
+replaced by a visible journal-only local degradation audit event. That audit
+never becomes broker work under an unrelated node identity. Invalid broker
+messages are never journaled or reconciled.
 
-```
-Always: for each target, entries pushed under an expired term are dropped.
-A target's term increments on every reconnect; any entry with a stale term
-cannot be delivered again after a reconnect.
-```
+Evidence: corrupt-row repair and subscriber validation tests.
 
-**Test:** `test_reconnect_term_prevents_stale_duplicates` — old term push
-returns False, expired-term entry never reaches the queue.
+## INV-5: resource generation cannot equivocate
 
-### INV4 — Per-target order preserved
+For one node and logical resource, an applied or attempted generation has one
+desired event. Lower generations are superseded; the same generation with
+different revision/digest/adapter fails.
 
-```
-Always: within a target's queue, entries are popped in push order
-(FIFO). The catch-up queue is preferred while in RECOVERY_FETCHING /
-FETCHING_COMPLETED; normal streaming resumes only after catch-up empties.
-```
-**Test:** `test_normal_stream`, `test_fetching_completed_transitions`.
+Evidence: stale-generation and generation-reuse tests.
 
-### INV5 — No loss while enabled
+## INV-6: events cannot select authority-bearing local state
 
-```
-Always: while publish is enabled (target not SUSPENDED), every emitted
-event is either delivered or remains pending (visible as degraded).
-An event is never silently dropped while enabled.
-```
-**Test:** `test_suspend_clears_and_drops_pushes` (suspended drops are
-explicit, surfaced as degraded, not silent).
+An event supplies a logical resource, adapter name, artifact reference,
+revision, and digest. Node config supplies artifact origin, local destination,
+credential reference, validation, and exact auto-apply binding. Events cannot
+execute shell, Git, or arbitrary paths.
 
-### INV6 — Causal consistency (no cycles)
+The binding includes the exact authority producer, resource, and adapter; a
+producer that is trusted for ingestion is not automatically trusted to apply
+every resource.
 
-```
-Always: the happens-before graph built from explicit `causes` edges +
-per-producer `producer_seq` chains is a DAG. `verify` fails loudly on a
-cycle; the checker uses an iterative Kahn topological sort (no recursion
-overflow on large journals).
-```
-**Test:** `TestCausalChecker` — explicit-edges-only construction, iterative
-Kahn.
+Evidence: config composition, traversal, URL/credential rejection, and adapter
+binding tests.
 
-### INV7 — Degraded signal is truthful
+## INV-7: apply is verified or classified
 
-```
-Always: health reports `pending` (events lacking JetStream PubAck),
-`degraded_events`, PubAck retry/ack counters, broker connection state, and the
-last bounded error. A non-zero pending is observable -> "no event" is
-distinguishable from "delivery failed".
-```
-**Test:** `TestDaemonHealthObservability` — seeds a pending event + an
-event.degraded, asserts both appear in the health response.
+Successful apply must pass adapter verification before `reconcile.applied`.
+Verification failure attempts rollback and records failure. An exception during
+apply is `INDETERMINATE` and is not automatically applied again.
 
-### INV9 — Producer and subscriber durability are distinct
+Evidence: apply, verification rollback, and indeterminate replay tests.
 
-```
-Always: receiving a fleet event appends it at most once to `journal/` by
-event_id and never creates producer-pending work on the subscriber. Producer
-pending is cleared only by a positive JetStream PubAck.
-```
+## INV-8: broker ACK follows durable local processing
 
-**Test:** `TestSubscriberJournal`, `TestDeliveryPump`; cross-host proof asserts
-remote pending=0/archive=1 and subscriber pending unchanged/journaled=1.
+The subscriber journals and processes a desired event before ACK. Storage or
+processor failure leaves the delivery unacknowledged. Awaiting approval also
+remains unacknowledged so a later policy change can receive it again.
 
-### INV10 — Validation precedes idempotency
+Evidence: subscriber processing and awaiting-approval tests. Real durable
+redelivery remains a broker integration gate.
 
-```
-Always: an invalid event cannot reserve/shadow an event_id. The gateway first
-validates the complete v1 envelope, subject, kind payload, and safe tokens;
-only valid events enter event_id deduplication and fact storage.
-```
+## INV-9: transport cannot silently downgrade
 
-**Test:** `test_invalid_duplicate_does_not_shadow_later_valid_event`, envelope
-validation regressions, and recursive sensitive-field redaction tests.
+Plaintext is loopback-development only. Fleet mode requires verified TLS and
+authentication. Standard INFO-then-TLS and explicit TLS-first are separate
+paths. Actual and envelope subjects must match.
 
-### INV8 — Retention age is authoritative
+Evidence: endpoint policy, handshake-order, TLS-advertisement, authentication,
+framing, system-reply, and subject-mismatch tests. Negative server ACL probes
+remain a secured-broker gate.
 
-```
-Always: gc() never deletes any archive younger than `archive_days`. Old managed
-archives may be removed; if retained young history prevents reaching the size
-cap, GC reports `unresolved_oversize` and degradation instead of deleting it.
-```
-**Test:** young-rotation survival + bare-daily unresolved-cap regressions.
+## INV-10: legacy migration is non-destructive
 
----
+Migration imports one stable, locked/offline, strict snapshot with provenance.
+Torn tails, malformed rows, symlinks, pending/acked conflicts, source mutation,
+or SQLite integrity failure roll back. The source is never deleted.
 
-## Model-check summary (what TLA+ would check)
+Evidence: migration success/idempotency/torn/conflict/mutation tests on native
+platforms.
 
-For each invariant: the property is `[]INV` (always INV) over the state
-machine. The unit tests are the executable proxy — a falsifying input
-(term mismatch, un-flocked emit, archive-after-remove, odd-suffix file)
-must be impossible to reach without the test failing.
+## INV-11: dependency claims remain narrow
 
-## Gap-to-close note
+`verify` checks only explicit-cause and producer-order DAG integrity. It never
+labels that result causal-consistency conformance.
 
-The theory map's "TLA+-style invariant list" build item is this document's
-reason to exist. A full TLA+ model (translated from the LogPlayer spec) is
-a future stretch; the testable invariant list is the durable form.
+Evidence: acyclic, cyclic, identical duplicate, and conflicting duplicate
+tests plus CLI wording.
+
+## INV-12: recovery history outlives arbitrary node absence
+
+The default broker stream does not expire desired-state history. Finite
+retention is not valid until a tested snapshot or per-resource compaction path
+can seed a new or long-offline node, and the exact referenced artifact remains
+available.
+
+Evidence: exact stream configuration verification and clean Compose replay.

@@ -1,89 +1,141 @@
 # anvil-events
 
-> **Fleet lifecycle event bus and journal for the Anvil family.**
+`anvil-events` is a stdlib-only desired-state convergence agent for small,
+heterogeneous fleets. An authority records an immutable desired revision once;
+each node catches up, updates only the resource it owns, verifies the result,
+and records an outcome.
 
-Every lifecycle change on any Anvil host — serve up/down, profile enter/leave,
-promotion applied, config adopted, repo synced — publishes a versioned JSON
-event and appends it to a durable journal. It answers the question that git
-archaeology can't: **"what changed on that box, and when?"**
-
-> **📖 Why this exists** — the story that started it: one fleet spread across
-> several machines, each earning its keep differently, all needing to know
-> about each other. Experiments that ran but never told anyone; agents that
-> couldn't see a change that had happened a box away; a simple reframe —
-> **the promotion is the event.** Read it: [`docs/origin-story.md`](docs/origin-story.md).
-
-- **anvil** coordinates *who* does what.
-- **anvil-serving** serves *what* models on which tiers.
-- **anvil-events** records *what happened* and tells everyone who needs to know.
-
-Backed by published distributed-systems theory — see
-[`research/README.md`](research/README.md) (LogPlayer exactly-once delivery,
-causal-consistency checking, logical-clock semantics).
+The current Anvil Serving topology motivated the product, but it is only a
+reference design. Public code uses generic roles and identities. Real hosts,
+addresses, routes, credentials, and operator state belong in a private
+deployment repository.
 
 ## Status
 
-**v1.0 (M1–M5 complete).** The stdlib-only implementation includes the typed
-v1 schema, transactional producer outbox, JetStream PubAck/retry delivery,
-deduplicated subscriber journal, validated/idempotent ingestion,
-LogPlayer-style recovery, causal verification, retention, and health. The
-hermetic suite runs on Python 3.11/3.12/3.13; cross-host transport has been
-exercised against the same public code path.
+Version 0.2 is a source redesign and is **not deployed**. The composable core,
+SQLite store, secured NATS client, managed-file reconciler, migration path, and
+117 hermetic tests run natively on Windows and Linux. Clean container probes
+also prove exact apply, broker-outage catch-up, mTLS identity mapping, and
+negative cross-node ACLs. CI is configured for Windows, macOS, and Linux;
+those remote jobs and live fleet acceptance remain gates.
 
-PRD: [`prd.md`](prd.md) · Decision: [`docs/adr/0001-anvil-events.md`](docs/adr/0001-anvil-events.md) ·
-Vocabulary: [`docs/event-vocabulary.md`](docs/event-vocabulary.md) ·
-Research: [`research/README.md`](research/README.md).
+The prior 0.1 implementation is assessed in
+[`docs/assessment/2026-08-16-baseline-assessment.md`](docs/assessment/2026-08-16-baseline-assessment.md).
+The accepted architecture is
+[`ADR-0003`](docs/adr/0003-fleet-convergence-architecture.md).
 
-## Why not ZooKeeper / K3s / etcd
+## Model
 
-Because the fleet has **one writer at a time** (whoever runs the promotion).
-That's a push-on-event problem, not a multi-writer consensus problem — NATS
-(15 MB, stdlib-friendly, subscription-only) covers it without cluster weight.
+```text
+lifecycle command
+  -> local SQLite acceptance (never waits for network)
+  -> asynchronous JetStream publish + PubAck evidence
+  -> durable per-node consumer
+  -> desired generation + exact artifact digest
+  -> preview/policy -> narrow adapter -> verify/rollback
+  -> reconcile.applied | reconcile.failed | reconcile.awaiting_approval
+```
 
-## Concepts
+The event is a notification and integrity contract, not a shell command or a
+configuration blob. It contains a logical resource, authority-assigned
+generation, immutable revision, SHA-256 digest, adapter name, and artifact
+reference. The node manifest—not the event—owns local paths, controller URLs,
+credentials, and automatic-apply policy.
 
-- **Event** — the versioned envelope in `schemas/events-v1.json`.
-- **Subject** — `anvil.fleet.<host>.<kind>`.
-- **Journal** — producer outbox/archive plus a separate deduplicated subscriber
-  journal. The journal is *what happened*; the repo remains *declared* state.
-- **Adapters** — anvil + anvil-serving each get an optional `events` extra
-  that shells out to this tool if present. Best-effort, never blocking.
+## Guarantees
 
-## Deployment
+- Local acceptance: one durable canonical event per idempotency key.
+- Broker delivery: at least once; a positive PubAck proves stream storage.
+- Journal identity: one canonical row per event ID; equivocation fails closed.
+- Resource order: generations are monotonic per resource and authority.
+- Auto-apply authority: an exact producer/resource/adapter binding is owned by
+  each node manifest; a node-wide producer allowlist is insufficient.
+- External apply: idempotent at least once unless an adapter can prove a
+  stronger atomic apply-plus-cursor contract.
+- Convergence: after faults stop and policy permits, a healthy subscribed node
+  reaches the latest accepted generation.
 
-anvil-events is **one artifact, two runtimes** (ADR-0002): `anvil events serve`
-runs as a **native daemon** on hosts without Docker (launchd on macOS, systemd
-on Linux) or as a **thin container** where a container runtime is already
-required (Windows + Docker Desktop). The journal root (outbox/archive/cursors)
-is volume-mounted in container mode and lives on the host — never inside the
-container. The same code path serves both.
+There is no fleet-global sequence and no globally exactly-once side-effect
+claim. `verify` checks dependency-DAG integrity; it does not claim database
+causal-consistency conformance.
 
-- Daemon: `anvil events serve` + sample launchd/systemd units in `deploy/`
-- Container: `deploy/Dockerfile` + `deploy/compose.yml` (volume + env)
-- Broker: nats-server co-deploys the same way per host; cross-host reachable
-  over tailnet
+## Network and identity
+
+The reference network is a Tailscale **tailnet**, not Telnet. Tailnet
+reachability does not authenticate event producers.
+
+- `development`: plaintext NATS is accepted on literal loopback or an
+  explicitly allowlisted single-label host inside an isolated container
+  network. Tailnet IPs and dotted LAN names are rejected.
+- `fleet`: `tls://`, hostname verification, and username/password or mTLS are
+  required. TLS-first is an explicit option because standard NATS TLS normally
+  upgrades after the initial `INFO` line.
+- A producer such as `node-a:router` must belong to envelope node `node-a`.
+  The subscriber also verifies the actual broker subject equals the envelope
+  subject. Fleet NATS ACLs can therefore bind a node principal to
+  `anvil.events.v2.<node>.>`.
+
+See [`deploy/nats-fleet.example.conf`](deploy/nats-fleet.example.conf) for a
+sanitized mTLS identity-map and ACL shape. Never place credential values in
+this repository.
+
+## Local development proof
+
+The Compose stack uses an isolated, unexposed broker network and is insecure
+outside that development boundary. It creates and exactly verifies the JetStream stream,
+starts a node reconciler, and exposes readiness at `127.0.0.1:9877`.
+
+```powershell
+docker compose -f deploy/compose.yml up -d --build
+
+$payload = @'
+{"resource":"routing/clients","generation":1,"revision":"rev-1","content_sha256":"781a9e745454e30551907d683c956be69055528219e5f567a1ba1afe245e2c17","adapter":"router_config","artifact":"routing/clients","targets":["node-b"]}
+'@
+$payload | docker compose -f deploy/compose.yml exec -T events `
+  anvil-events --root /var/lib/anvil/events record state.desired `
+  --node node-a --producer node-a:router --operation-key demo-routing-1
+
+docker compose -f deploy/compose.yml exec events `
+  python -c "print(open('/var/lib/anvil/events/managed/router-client.toml').read())"
+```
+
+This proves the development path only. It does not prove fleet TLS, private
+manifests, client reload behavior, or a live rollout.
 
 ## CLI
 
+```text
+anvil-events init
+anvil-events record <dotted-kind> --node N --producer N:ROLE --operation-key K
+anvil-events serve --config /path/to/node.toml --durable node-events
+anvil-events status --json
+anvil-events replay --lines 20
+anvil-events verify <store-or-legacy-jsonl>
+anvil-events migrate-legacy <legacy-root> [--offline-source]
+anvil-events broker-init deploy/nats-stream.json
 ```
-anvil events pub <subject> '<json>'      # publish (default nats://127.0.0.1:4222)
-anvil events sub <subject> [--count N]   # subscribe (bounded)
-anvil events emit <kind> --host H ...      # outbox-first + publish
-anvil events serve                        # daemon (subscriber + journal)
-anvil events replay [--lines N]           # replay the journal
-anvil events verify <dir-or-managed-file> # causal-consistency check
-```
 
-Transport: a minimal stdlib NATS/JetStream client (`anvil_events/nats_mini.py`)
-speaks PubAck plus durable explicit-ACK consumer wire protocols directly.
-The package ships stdlib-only (`dependencies = []`). See `deploy/README.md` for
-the required stream configuration.
+`record` reads one JSON object from standard input and performs no broker I/O.
+The raw publish/subscribe commands and the Git-mutating `sync-repo` command
+were removed. Git publication and host deployment remain separate managed
+workflows.
 
-## Roadmap
+## Repository boundaries
 
-- M1–M5 — complete.
-- `anvil-events sub` and the daemon bind stable JetStream durable consumers,
-  replay seven-day retained history, and ACK only after local processing.
+- `domain*`: v1 compatibility plus the extensible v2 envelope.
+- `storage/`: SQLite transactions, delivery evidence, retention, operations,
+  facts, and fail-closed legacy migration.
+- `transport/`: endpoint security, NATS framing, and JetStream client.
+- `reconciliation/`: artifact sources, adapter contracts, policy, state, and
+  managed-file implementation.
+- `runtime/`: subscriber, delivery pump, health, stats, and composition.
+- `deploy/`: portable development and fleet templates only.
 
-See [`prd.md`](prd.md) for the full plan, acceptance criteria, and open
-questions.
+The package has no runtime dependencies. Tests use `unittest` and no real
+network. The project contract and remaining rollout gates are in
+[`prd.md`](prd.md).
+
+The default stream does not expire history: a newly enrolled node must still
+see the current desired generation. Operators may introduce finite retention
+only with a tested desired-state snapshot/compaction mechanism, and immutable
+artifacts must remain resolvable while their generation can be replayed.
