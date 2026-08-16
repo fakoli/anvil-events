@@ -65,28 +65,28 @@ The session WILL run long. When context runs low:
 
 | Milestone | Scope (prd.md) | Status |
 |---|---|---|
-| R1 | audit + research correction + composable domain/storage | local implementation complete; PR/CI/review pending |
-| R2 | secure transport + reconciliation + portable runtime | local implementation and Compose fault proof complete; PR/CI/review pending |
+| R1 | audit + research correction + composable domain/storage | ✅ DONE — PRs #1/#2 merged; review blockers fixed; CI green |
+| R2 | secure transport + reconciliation + portable runtime | ✅ DONE — PRs #1/#2 merged; review blockers fixed; CI/acceptance green |
 | R3 | public anvil-serving lifecycle seam | pending |
 | R4 | private manifests + canary | pending separate authorization |
 | R5 | staged rollout + live acceptance | pending separate authorization |
 
-**Last completed action:** local R1/R2 gates and broker-loss recovery proof;
-no source commit, installation, or deployment yet.
+**Last completed action:** R1/R2 correction PR #2 merged at `af688436`; all
+exact-head source and synthetic acceptance gates pass. No installation, route
+change, service restart, private manifest, or live deployment was performed.
 
 ## 5. Repo facts (for quick orientation)
 
 - Public repo: `fakoli/anvil-events` on GitHub. Branch: `main`.
 - Git identity: `Sekou Doumbouya <sdoumbouya81@gmail.com>`.
 - Test command: `python -W error::ResourceWarning -m unittest discover -s tests -q`
-  (currently 117 pass on Windows and Linux; one Windows-only test is skipped
+  (currently 130 pass on Windows and Linux; one Windows-only test is skipped
   on Linux).
 - Lint: `ruff check .`.
 - Current v0.2 source is not installed or deployed by this workflow.
 - Real service, broker, topology, and route state belong in the private
   operator repository; do not copy them into this public file.
-- Review model: `gpt-5.6-sol` via `--provider openai-codex` (ChatGPT sub,
-  authenticated; `codex` model name returns 400 — must use `gpt-5.6-sol`).
+- Review model: `gpt-5.6-sol` through the authenticated Codex OpenAI provider.
 - Public-content policy: never commit real operator identity (hosts, models,
   IPs, ports, revisions) — de-identify as `node-a`/`node-b`, synthetic names.
 - The origin story lives in `docs/origin-story.md`; the deployment model is
