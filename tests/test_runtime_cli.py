@@ -207,6 +207,62 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertEqual(["$JS.ACK.stream.consumer"], client.acks)
         self.assertEqual(1, len(list(self.store.read_journal())))
 
+    def test_subscriber_reconciles_stored_state_before_broker_connect(self):
+        calls = []
+        stop = threading.Event()
+
+        class Processor:
+            def reconcile_stored(inner_self):
+                calls.append("reconcile")
+
+        class Client:
+            def connect(inner_self, timeout):
+                calls.append("connect")
+                return inner_self
+
+            def bind_durable_consumer(inner_self, *args, **kwargs):
+                stop.set()
+                return "anvil.delivery.node-b-events"
+
+            def close(inner_self):
+                pass
+
+        subscriber = Subscriber(
+            self.store, "nats://127.0.0.1:4222", "ANVIL_EVENTS",
+            "node-b-events", "anvil.events.v2.>", {"node-a:router"},
+            stop, self.stats, processor=Processor(),
+            client_factory=lambda url: Client(),
+        )
+
+        subscriber.run()
+
+        self.assertEqual(["reconcile", "connect"], calls)
+
+    def test_subscriber_does_not_connect_when_stored_state_cannot_converge(self):
+        stop = threading.Event()
+
+        class Processor:
+            def reconcile_stored(inner_self):
+                stop.set()
+                raise OSError("managed state unavailable")
+
+        class Client:
+            def connect(inner_self, timeout):
+                raise AssertionError("broker connection must remain gated")
+
+        subscriber = Subscriber(
+            self.store, "nats://127.0.0.1:4222", "ANVIL_EVENTS",
+            "node-b-events", "anvil.events.v2.>", {"node-a:router"},
+            stop, self.stats, processor=Processor(),
+            client_factory=lambda url: Client(),
+        )
+
+        subscriber.run()
+
+        self.assertIn(
+            "managed state unavailable", self.stats.snapshot()["last_error"],
+        )
+
 
 class ServiceCompositionTests(unittest.TestCase):
     def test_artifact_publisher_configuration_is_all_or_nothing(self):

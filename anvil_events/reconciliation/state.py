@@ -63,6 +63,15 @@ class ReconcileState:
                             raise ValueError(
                                 "conflicting desired state for an applied generation"
                             )
+                        owner = conn.execute(
+                            """
+                            SELECT operation_id FROM reconcile_attempts
+                             WHERE node = ? AND resource = ? AND generation = ?
+                            """,
+                            (node, payload["resource"], payload["generation"]),
+                        ).fetchone()
+                        if owner is not None:
+                            operation_id = owner["operation_id"]
                         return "applied", operation_id
                 attempt = conn.execute(
                     "SELECT state FROM reconcile_attempts WHERE operation_id = ?",
@@ -101,6 +110,48 @@ class ReconcileState:
                 return "prepared", operation_id
             except Exception:
                 raise
+
+    def reopen_applied(self, operation_id, desired, node):
+        """Re-open one applied generation after its adapter detects drift."""
+        payload = desired["payload"]
+        with self.store.transaction(immediate=True) as conn:
+            current = conn.execute(
+                """
+                SELECT generation, revision, content_sha256, adapter
+                  FROM reconcile_resources
+                 WHERE node = ? AND resource = ?
+                """,
+                (node, payload["resource"]),
+            ).fetchone()
+            if current is None or any(
+                current[field] != payload[field]
+                for field in (
+                    "generation", "revision", "content_sha256", "adapter",
+                )
+            ):
+                raise ValueError("applied resource changed before drift repair")
+            changed = conn.execute(
+                """
+                UPDATE reconcile_attempts
+                   SET state = 'PREPARED', preview_json = NULL,
+                       error = NULL, started_at = ?, completed_at = NULL
+                 WHERE operation_id = ?
+                """,
+                (time.time(), operation_id),
+            ).rowcount
+            if not changed:
+                raise ValueError("applied reconciliation attempt is missing")
+
+    def applied_event_ids(self, node):
+        with self.store.transaction(immediate=False) as conn:
+            rows = conn.execute(
+                """
+                SELECT event_id FROM reconcile_resources
+                 WHERE node = ? ORDER BY resource
+                """,
+                (node,),
+            ).fetchall()
+        return tuple(row["event_id"] for row in rows)
 
     def begin_apply(self, operation_id):
         with self.store.transaction(immediate=True) as conn:
