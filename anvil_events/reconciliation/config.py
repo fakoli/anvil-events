@@ -10,9 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .artifacts import DirectoryArtifactResolver, HTTPSArtifactResolver
+from .command_config_adapter import CommandConfigAdapter
 from .contracts import AdapterRegistry, AllowBindingsPolicy
 from .engine import ReconcileEngine
 from .file_adapter import ManagedFileAdapter
+from .json_merge_adapter import JSONMergeAdapter
 from .processor import DesiredStateProcessor
 
 
@@ -88,14 +90,36 @@ def load_node_runtime(path, store):
     if not isinstance(adapters, list) or not adapters:
         raise ValueError("node config requires at least one [[adapters]] entry")
     for entry in adapters:
-        if entry.get("type") != "managed_file":
-            raise ValueError("only the managed_file adapter is built in")
-        adapter = ManagedFileAdapter(
-            entry["name"],
-            _path(config_path.parent, entry["destination"]),
-            validator=_validator(entry.get("validator")),
-            mode=entry.get("mode"),
-        )
+        adapter_type = entry.get("type")
+        if adapter_type == "managed_file":
+            adapter = ManagedFileAdapter(
+                entry["name"],
+                _path(config_path.parent, entry["destination"]),
+                validator=_validator(entry.get("validator")),
+                mode=entry.get("mode"),
+            )
+        elif adapter_type == "json_merge":
+            adapter = JSONMergeAdapter(
+                entry["name"],
+                _path(config_path.parent, entry["destination"]),
+                protected_paths=entry.get("protected_paths", []),
+                mode=entry.get("mode"),
+            )
+        elif adapter_type == "command_config":
+            adapter = CommandConfigAdapter(
+                entry["name"], entry.get("command", []),
+                allowed_keys=entry.get("allowed_keys", []),
+                get_args=entry.get("get_args", ["get"]),
+                set_args=entry.get("set_args", ["set"]),
+                unset_args=entry.get("unset_args", ["unset"]),
+                timeout=entry.get("timeout", 30),
+                missing_returncode=entry.get("missing_returncode", 1),
+                missing_stderr_prefix=entry.get("missing_stderr_prefix"),
+            )
+        else:
+            raise ValueError(
+                "adapter type must be managed_file, json_merge, or command_config"
+            )
         registry.register(adapter)
         resources = entry.get("auto_apply_resources", [])
         if not isinstance(resources, list) or not all(
@@ -103,7 +127,7 @@ def load_node_runtime(path, store):
             raise ValueError("auto_apply_resources must be a string array")
         if len(resources) > 1:
             raise ValueError(
-                "a managed_file adapter may auto-apply exactly one resource"
+                "an adapter may auto-apply exactly one resource"
             )
         authorities = entry.get("authority_producers", [])
         if not isinstance(authorities, list) or not all(

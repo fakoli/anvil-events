@@ -158,6 +158,14 @@ An event does not execute arbitrary shell, Git, or filesystem operations. Git
 commit/push remains in a separately reviewed source workflow. Remote execution
 uses the authenticated controller path; SSH is bootstrap/recovery only.
 
+The built-in secret-preserving integrations are whole-file replacement for
+owned files, JSON object merge for mixed-ownership files, and an argv-only
+configuration adapter whose executable, verb prefixes, and non-secret key
+allowlist are fixed by the node manifest. Desired artifacts can provide only
+the allowlisted values; they cannot select a command. Authorities can publish
+exact artifacts through the authenticated read-only loopback HTTP route behind
+a separately managed private HTTPS ingress.
+
 ### 5. Runtime and packaging
 
 The runtime composes the domain, store, transport, and reconciler through small

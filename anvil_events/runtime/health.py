@@ -8,10 +8,11 @@ import threading
 
 
 class HealthServer:
-    def __init__(self, address, snapshot, stop_event):
+    def __init__(self, address, snapshot, stop_event, route=None):
         self.address = address
         self.snapshot = snapshot
         self.stop_event = stop_event
+        self.route = route
         self.socket = None
         self.thread = None
         self._active = None
@@ -58,10 +59,52 @@ class HealthServer:
     def _respond(self, connection):
         connection.settimeout(0.5)
         try:
-            request = connection.recv(4096).split(b"\r\n", 1)[0].split()
-            path = request[1].decode("ascii") if len(request) >= 2 else "/"
+            raw = b""
+            while b"\r\n\r\n" not in raw and len(raw) <= 8192:
+                chunk = connection.recv(8193 - len(raw))
+                if not chunk:
+                    break
+                raw += chunk
+            if len(raw) > 8192 or b"\r\n\r\n" not in raw:
+                raise ValueError("invalid HTTP request")
+            lines = raw.split(b"\r\n")
+            request = lines[0].split()
+            if len(request) != 3 or request[2] not in (b"HTTP/1.0", b"HTTP/1.1"):
+                raise ValueError("invalid HTTP request line")
+            method = request[0].decode("ascii")
+            path = request[1].decode("ascii")
+            headers = {}
+            for line in lines[1:]:
+                if not line:
+                    break
+                if line[:1] in (b" ", b"\t"):
+                    raise ValueError("folded HTTP headers are not supported")
+                name, separator, value = line.partition(b":")
+                if not separator:
+                    raise ValueError("invalid HTTP header")
+                normalized = name.decode("ascii").strip().lower()
+                if not normalized or normalized in headers:
+                    raise ValueError("duplicate or empty HTTP header")
+                headers[normalized] = value.decode("latin-1").strip()
         except Exception:
-            path = "/"
+            self._send(
+                connection, b"400 Bad Request",
+                ((b"Content-Type", b"application/json"),),
+                b'{"error":"invalid request"}',
+            )
+            return
+        routed = self.route(method, path, headers) if self.route else None
+        if routed is not None:
+            code, response_headers, body = routed
+            self._send(connection, code, response_headers, body)
+            return
+        if method != "GET":
+            self._send(
+                connection, b"405 Method Not Allowed",
+                ((b"Content-Type", b"application/json"), (b"Allow", b"GET")),
+                b'{"error":"method not allowed"}',
+            )
+            return
         status = self.snapshot()
         if path not in ("/", "/live", "/ready"):
             code = b"404 Not Found"
@@ -72,10 +115,19 @@ class HealthServer:
         else:
             code = b"200 OK"
         body = json.dumps(status, sort_keys=True).encode()
+        self._send(
+            connection, code, ((b"Content-Type", b"application/json"),), body,
+        )
+
+    @staticmethod
+    def _send(connection, code, headers, body):
         try:
+            encoded_headers = b"".join(
+                name + b": " + value + b"\r\n" for name, value in headers
+            )
             connection.sendall(
                 b"HTTP/1.1 " + code
-                + b"\r\nContent-Type: application/json\r\n"
+                + b"\r\n" + encoded_headers
                 + b"Content-Length: " + str(len(body)).encode()
                 + b"\r\nConnection: close\r\n\r\n" + body
             )

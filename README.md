@@ -110,6 +110,9 @@ manifests, client reload behavior, or a live rollout.
 anvil-events init
 anvil-events record <dotted-kind> --node N --producer N:ROLE --operation-key K
 anvil-events serve --config /path/to/node.toml --durable node-events
+# Authority only, behind authenticated private HTTPS ingress:
+anvil-events serve --artifact-root /srv/anvil-artifacts \
+  --artifact-auth-env ANVIL_ARTIFACT_AUTH
 anvil-events status --json
 anvil-events replay --lines 20
 anvil-events verify <store-or-legacy-jsonl>
@@ -129,7 +132,7 @@ workflows.
   facts, and fail-closed legacy migration.
 - `transport/`: endpoint security, NATS framing, and JetStream client.
 - `reconciliation/`: artifact sources, adapter contracts, policy, state, and
-  managed-file implementation.
+  managed-file, JSON-merge, and allowlisted command-config implementations.
 - `runtime/`: subscriber, delivery pump, health, stats, and composition.
 - `deploy/`: portable development and fleet templates only.
 

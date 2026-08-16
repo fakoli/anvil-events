@@ -22,6 +22,8 @@ def build_parser():
     parser.add_argument("--durable")
     parser.add_argument("--backend", choices=("auto", "sqlite"), default="auto")
     parser.add_argument("--config", help="node reconciliation TOML")
+    parser.add_argument("--artifact-root")
+    parser.add_argument("--artifact-auth-env")
     parser.add_argument("--health-port", type=int, default=9877)
     parser.add_argument(
         "--health-host", choices=("127.0.0.1", "0.0.0.0"),
@@ -42,6 +44,8 @@ def main(argv=None):
         durable=args.durable,
         store_backend=args.backend,
         node_config=args.config,
+        artifact_root=args.artifact_root,
+        artifact_auth_env=args.artifact_auth_env,
     )
     service.log_banner()
     terminate = threading.Event()

@@ -44,6 +44,8 @@ def build_parser():
     daemon.add_argument("--stream", default="ANVIL_EVENTS")
     daemon.add_argument("--durable")
     daemon.add_argument("--config", help="node reconciliation TOML")
+    daemon.add_argument("--artifact-root")
+    daemon.add_argument("--artifact-auth-env")
     daemon.add_argument("--health-port", type=int, default=9877)
     daemon.add_argument(
         "--health-host", choices=("127.0.0.1", "0.0.0.0"),
@@ -84,6 +86,10 @@ def _serve(args):
         arguments += ["--durable", args.durable]
     if args.config:
         arguments += ["--config", args.config]
+    if args.artifact_root:
+        arguments += ["--artifact-root", args.artifact_root]
+    if args.artifact_auth_env:
+        arguments += ["--artifact-auth-env", args.artifact_auth_env]
     return serve(arguments)
 
 

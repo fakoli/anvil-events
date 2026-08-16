@@ -36,6 +36,29 @@ Fleet mode requires all of the following:
    validation, and policy;
 7. separately managed service environment and credential files.
 
+Three built-in adapter types cover progressively narrower integration seams:
+
+- `managed_file` atomically replaces one complete, secret-free file;
+- `json_merge` applies an RFC 7396-style object patch while preserving
+  unmentioned local fields and refusing credential-shaped patch keys;
+- `command_config` invokes one manifest-fixed executable with argv only and
+  lets an artifact supply values for an explicit non-secret key allowlist.
+
+Its missing-key return code and optional stderr prefix are also fixed by the
+manifest so an operational command failure is not mistaken for an absent key.
+
+The event never supplies a path, executable, argument prefix, or allowed key.
+Those capabilities remain in the private node manifest. Command output and
+prior values are not published as reconciliation evidence.
+
+An authority may add `--artifact-root` and `--artifact-auth-env` to its
+`serve` command. This exposes authenticated read-only
+`/artifacts/<encoded-reference>/<revision>` requests on the same loopback HTTP
+listener. Put a private HTTPS ingress in front of it; never bind the bare HTTP
+publisher to a LAN or tailnet interface. The bearer value stays in the service
+environment and the node resolver references only its environment-variable
+name.
+
 `nats-fleet.example.conf` shows a sanitized two-node mTLS identity-map shape.
 Each client certificate identity must map exactly to its configured NATS user.
 Real broker configuration, identities, addresses, credential values, and node

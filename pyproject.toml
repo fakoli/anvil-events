@@ -41,6 +41,7 @@ include = ["anvil_events*"]
 "share/anvil-events/schemas" = ["schemas/events-v1.json", "schemas/events-v2.json"]
 "share/anvil-events/deploy" = [
   "deploy/development-node.toml",
+  "deploy/fleet-node.example.toml",
   "deploy/nats-fleet.example.conf",
   "deploy/nats-stream.json",
 ]

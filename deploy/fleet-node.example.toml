@@ -1,0 +1,35 @@
+# Sanitized shape only. Real identities, URLs, paths, and credential names
+# belong in a private node manifest.
+version = 1
+node = "node-b"
+producer = "node-b:reconciler"
+allowed_producers = ["node-a:router"]
+
+[artifact_source]
+type = "https"
+url = "https://controller.example.invalid/anvil-events/artifacts"
+mode = "fleet"
+token_env = "EXAMPLE_ARTIFACT_AUTH"
+
+[[adapters]]
+name = "agent_catalog"
+type = "json_merge"
+destination = "/var/lib/example-agent/config.json"
+mode = 384
+protected_paths = ["providers.local.credential"]
+auto_apply_resources = ["routing/agent-catalog"]
+authority_producers = ["node-a:router"]
+
+[[adapters]]
+name = "agent_settings"
+type = "command_config"
+command = ["/opt/example-agent/bin/agent", "config"]
+get_args = ["get"]
+set_args = ["set"]
+unset_args = ["unset"]
+missing_returncode = 1
+missing_stderr_prefix = "Config key not set:"
+allowed_keys = ["model.default", "model.context_length"]
+timeout = 30
+auto_apply_resources = ["routing/agent-settings"]
+authority_producers = ["node-a:router"]
