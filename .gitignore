@@ -9,3 +9,4 @@ venv/
 events/          # local event roots (outbox/archive) are operator data
 *.local.toml
 .DS_Store
+graphify-out

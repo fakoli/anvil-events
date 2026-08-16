@@ -62,6 +62,23 @@ class EventsDaemon:
                        "last_error": None, "producer_connected": False,
                        "delivery_errors": 0, "last_delivery_error": None,
                        "started": time.time()}
+        self._logged_url = None
+
+    def log_banner(self, url=None):
+        """Log the daemon banner once per broker URL (state-change dedup).
+
+        The reconnect loop in _run() previously re-emitted the full banner on
+        every round, producing dozens of identical lines in the daemon log.
+        Now the banner prints only on first start and when the effective
+        broker URL changes (e.g. env override picked up after a restart).
+        """
+        url = url if url is not None else self.url
+        if self._logged_url == url:
+            return
+        print(f"anvil events serve: subject={self.subject} root={self.root} "
+              f"url={url} health={self.health_addr[0]}:{self.health_addr[1]}",
+              flush=True)
+        self._logged_url = url
 
     # -- validation gate -------------------------------------------------
     def _valid(self, e):
@@ -307,8 +324,7 @@ def main(argv=None):
     d = EventsDaemon(root=args.root, url=args.url, subject=args.subject,
                      health=("127.0.0.1", args.health_port), stream=args.stream,
                      durable=args.durable)
-    print(f"anvil events serve: subject={args.subject} root={args.root} url={args.url} "
-          f"health=127.0.0.1:{args.health_port}", flush=True)
+    d.log_banner()
     if args.once:
         # bounded run: keep appending until SIGINT (tests use --once + timeout)
         d.start()

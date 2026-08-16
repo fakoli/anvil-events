@@ -1225,7 +1225,8 @@ class TestAckOrdering(unittest.TestCase):
         root = tempfile.mkdtemp()
         try:
             o = Outbox(root)
-            e = make_event("p1", "serve.up", "node-a", {})
+            day = utcnow_iso()[:10]
+            e = make_event("p1", "serve.up", "node-a", {}, observed_at=utcnow_iso())
             o.append(e)
             # archive first, then remove from pending
             import inspect
@@ -1236,7 +1237,7 @@ class TestAckOrdering(unittest.TestCase):
             # and end-to-end: after ack both done
             o.ack(e)
             self.assertEqual(o.count_pending(), 0)
-            with open(os.path.join(root, "archive", "2026-08-13.jsonl")) as f:
+            with open(os.path.join(root, "archive", day + ".jsonl")) as f:
                 self.assertIn(e["event_id"], f.read())
         finally:
             shutil.rmtree(root, ignore_errors=True)
