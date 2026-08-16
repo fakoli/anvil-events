@@ -208,6 +208,19 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
 
 class ServiceCompositionTests(unittest.TestCase):
+    def test_artifact_publisher_configuration_is_all_or_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            for options in (
+                {"artifact_root": root},
+                {"artifact_auth_env": "ANVIL_ARTIFACT_AUTH"},
+            ):
+                with self.subTest(options=options), self.assertRaisesRegex(
+                        ValueError, "requires root and auth env"):
+                    EventsService(
+                        root, "nats://127.0.0.1:4222", "anvil.events.v2.>",
+                        "ANVIL_EVENTS", ("127.0.0.1", 0), **options,
+                    )
+
     def test_service_starts_health_and_joins_workers(self):
         with tempfile.TemporaryDirectory() as root:
             service = EventsService(
@@ -272,6 +285,27 @@ class HealthTests(unittest.TestCase):
                 health.start()
         finally:
             occupied.close()
+
+    def test_health_rejects_non_get_and_malformed_requests(self):
+        stop = threading.Event()
+        health = HealthServer(
+            ("127.0.0.1", 0), lambda: self._snapshot(), stop,
+        )
+        health.start()
+        try:
+            for request, expected in (
+                (b"POST /live HTTP/1.1\r\nHost: localhost\r\n\r\n", b"405"),
+                (b"GET /live\r\nHost: localhost\r\n\r\n", b"400"),
+                (b"GET /live HTTP/1.1\r\nHost: one\r\nHost: two\r\n\r\n", b"400"),
+            ):
+                with self.subTest(request=request):
+                    client = socket.create_connection(health.address, timeout=2)
+                    client.sendall(request)
+                    response = client.recv(4096)
+                    client.close()
+                    self.assertIn(expected, response)
+        finally:
+            health.close()
 
     def test_idle_health_client_cannot_block_shutdown(self):
         stop = threading.Event()
@@ -355,10 +389,14 @@ class CLITests(unittest.TestCase):
             self.assertEqual(0, main([
                 "--root", self.root, "serve", "--config", "node.toml",
                 "--durable", "node-events", "--health-port", "9000",
+                "--artifact-root", "artifacts",
+                "--artifact-auth-env", "ANVIL_ARTIFACT_AUTH",
             ]))
         forwarded = serve.call_args.args[0]
         self.assertIn("node.toml", forwarded)
         self.assertIn("node-events", forwarded)
+        self.assertIn("artifacts", forwarded)
+        self.assertIn("ANVIL_ARTIFACT_AUTH", forwarded)
 
     def test_migration_command_reports_acked_role(self):
         legacy = Path(self.root) / "legacy"

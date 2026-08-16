@@ -48,6 +48,16 @@ def _valid_resource(value):
     )
 
 
+def valid_resource_identifier(value):
+    """Return whether value is a portable logical resource/artifact identifier."""
+    return _valid_resource(value)
+
+
+def valid_revision_identifier(value):
+    """Return whether value is one safe immutable revision identifier."""
+    return bool(isinstance(value, str) and _REVISION.fullmatch(value))
+
+
 def canonical_json(value):
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False,
@@ -150,9 +160,9 @@ def validate_payload(kind, payload):
             return False, f"{field} must be a bounded non-empty string"
     if "adapter" in payload and not _SAFE_TOKEN.fullmatch(payload["adapter"]):
         return False, "adapter must be one safe token"
-    if "revision" in payload and not _REVISION.fullmatch(payload["revision"]):
+    if "revision" in payload and not valid_revision_identifier(payload["revision"]):
         return False, "revision must be one safe immutable identifier"
-    if "artifact" in payload and not _valid_resource(payload["artifact"]):
+    if "artifact" in payload and not valid_resource_identifier(payload["artifact"]):
         return False, "artifact must be a safe logical identifier"
     return True, ""
 

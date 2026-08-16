@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from ..domain_v2 import valid_resource_identifier, valid_revision_identifier
 from ..transport.security import host_is_loopback
 from .contracts import Artifact
 
@@ -32,6 +33,9 @@ class DirectoryArtifactResolver:
         self.max_bytes = max_bytes
 
     def resolve(self, reference, revision):
+        if not valid_resource_identifier(reference) or not valid_revision_identifier(
+                revision):
+            raise ValueError("artifact reference or revision is invalid")
         supplied = self.root / reference / revision
         if supplied.is_symlink():
             raise ValueError("artifact must not be a symbolic link")
@@ -88,6 +92,9 @@ class HTTPSArtifactResolver:
         self.opener = opener or build_opener(_NoRedirects())
 
     def resolve(self, reference, revision):
+        if not valid_resource_identifier(reference) or not valid_revision_identifier(
+                revision):
+            raise ValueError("artifact reference or revision is invalid")
         url = f"{self.base_url}/{quote(reference, safe='')}/{quote(revision, safe='')}"
         headers = {"Accept": "application/octet-stream"}
         if self.token_env:

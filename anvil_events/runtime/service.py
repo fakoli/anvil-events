@@ -12,6 +12,7 @@ from ..domain import parse_allowed_producers
 from ..reconciliation import load_node_runtime
 from ..store import open_event_store
 from ..transport.security import parse_endpoint
+from .artifact_http import ArtifactHTTPPublisher
 from .delivery import DeliveryPump
 from .health import HealthServer
 from .stats import RuntimeStats
@@ -20,7 +21,8 @@ from .subscriber import Subscriber
 
 class EventsService:
     def __init__(self, root, url, subject, stream, health, *, durable=None,
-                 store_backend="auto", node_config=None):
+                 store_backend="auto", node_config=None, artifact_root=None,
+                 artifact_auth_env=None):
         self.root = root
         self.url = url
         self.subject = subject
@@ -52,7 +54,16 @@ class EventsService:
             self.store, url, self.stop_event, self.stats, stream=stream,
         )
         self.reconciliation_enabled = runtime is not None
-        self.health = HealthServer(health, self.health_snapshot, self.stop_event)
+        if bool(artifact_root) != bool(artifact_auth_env):
+            raise ValueError("artifact publishing requires root and auth env")
+        self.artifact_publisher = (
+            ArtifactHTTPPublisher(artifact_root, artifact_auth_env)
+            if artifact_root else None
+        )
+        self.health = HealthServer(
+            health, self.health_snapshot, self.stop_event,
+            route=self.artifact_publisher.route if self.artifact_publisher else None,
+        )
         self.health_address = health
         self.threads = ()
         self._logged_url = None
