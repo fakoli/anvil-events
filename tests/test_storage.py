@@ -8,11 +8,13 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from helpers import desired_event, desired_payload
 
 from anvil_events.domain import make_event, validate_event
 from anvil_events.storage import DATABASE_NAME, SQLiteStore
+from anvil_events.storage import database as database_module
 
 
 class SQLiteStoreTests(unittest.TestCase):
@@ -31,6 +33,14 @@ class SQLiteStoreTests(unittest.TestCase):
         reopened = SQLiteStore(self.root)
         self.assertEqual(1, reopened.status()["pending"])
         self.assertEqual(1, reopened.status()["schema_version"])
+
+    def test_concurrent_fresh_initializers_share_one_owned_schema(self):
+        root = Path(self.root) / "concurrent-initialize"
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            stores = list(pool.map(lambda _: SQLiteStore(root), range(16)))
+        self.assertTrue(all(
+            store.status()["schema_version"] == 1 for store in stores
+        ))
 
     def test_concurrent_producer_sequences_are_unique(self):
         def emit(index):
@@ -174,6 +184,18 @@ class SQLiteStoreTests(unittest.TestCase):
         ]
         self.assertEqual([event], healed)
 
+    def test_journal_only_corruption_heals_on_canonical_redelivery(self):
+        event = desired_event()
+        self.store.append_journal(event)
+        with self.store.database.connect() as connection:
+            connection.execute(
+                "UPDATE events SET envelope_json = 'not json' WHERE event_id = ?",
+                (event["event_id"],),
+            )
+        self.store.append_journal(event)
+        self.assertEqual([event], list(self.store.read_journal()))
+        self.assertEqual(1, self.store.status()["quarantined"])
+
     def test_quarantine_marks_record_operation_indeterminate(self):
         event, _ = self.store.record_v2(
             "operation-1", "key-1", "node-a:router", "state.desired",
@@ -244,6 +266,21 @@ class SQLiteStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "unowned"):
             SQLiteStore(other)
 
+    def test_interrupted_initialization_rolls_back_and_retries(self):
+        interrupted = Path(self.root) / "interrupted"
+
+        def fail_after_first_statement(connection):
+            connection.execute(next(database_module._schema_statements()))
+            raise OSError("synthetic process death")
+
+        with patch.object(
+                database_module, "_apply_schema",
+                side_effect=fail_after_first_statement):
+            with self.assertRaisesRegex(OSError, "synthetic"):
+                SQLiteStore(interrupted)
+        recovered = SQLiteStore(interrupted)
+        self.assertEqual(0, recovered.status()["pending"])
+
     def test_operation_indeterminate_is_visible(self):
         self.store.prepare_operation(
             "external-1", "external-key", "node-a:controller",
@@ -252,6 +289,41 @@ class SQLiteStoreTests(unittest.TestCase):
         self.store.mark_operation_indeterminate("external-1", "connection lost")
         unresolved = self.store.list_unresolved_operations()
         self.assertEqual("INDETERMINATE", unresolved[0]["state"])
+
+    def test_operation_resolution_must_match_durable_intent(self):
+        self.store.prepare_operation(
+            "external-1", "external-key", "node-a:controller",
+            "plugin.changed", {"action": "reload"},
+        )
+        with self.assertRaisesRegex(ValueError, "durable intent"):
+            self.store.resolve_operation(
+                "external-1", "node-a", {"action": "replace"},
+            )
+        event, repeated = self.store.resolve_operation(
+            "external-1", "node-a", {"action": "reload"},
+        )
+        self.assertFalse(repeated)
+        self.assertEqual({"action": "reload"}, event["payload"])
+        same, repeated = self.store.resolve_operation(
+            "external-1", "node-a", {"action": "reload"},
+        )
+        self.assertTrue(repeated)
+        self.assertEqual(event, same)
+        with self.assertRaisesRegex(ValueError, "durable result"):
+            self.store.resolve_operation(
+                "external-1", "node-b", {"action": "reload"},
+            )
+
+    def test_indeterminate_operation_cannot_be_silently_resolved(self):
+        self.store.prepare_operation(
+            "external-1", "external-key", "node-a:controller",
+            "plugin.changed", {"action": "reload"},
+        )
+        self.store.mark_operation_indeterminate("external-1", "connection lost")
+        with self.assertRaisesRegex(ValueError, "explicit operator recovery"):
+            self.store.resolve_operation(
+                "external-1", "node-a", {"action": "reload"},
+            )
 
 
 class LegacyMigrationTests(unittest.TestCase):

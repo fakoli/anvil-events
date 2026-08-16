@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from ..domain_v2 import content_sha256, validate_event_v2
 from .contracts import DenyByDefaultPolicy
+from .resource_lock import resource_lock
 from .state import ReconcileState
 
 
@@ -37,6 +38,10 @@ class ReconcileEngine:
         targets = payload.get("targets")
         if targets is not None and self.node not in targets:
             return ReconcileResult("not-targeted", "", None, None)
+        with resource_lock(self.store.root, self.node, payload["resource"]):
+            return self._process_locked(desired, payload)
+
+    def _process_locked(self, desired, payload):
         claim, operation_id = self.state.claim(self.node, desired)
         if claim == "superseded":
             return ReconcileResult(claim, operation_id, None, None)
@@ -94,6 +99,7 @@ class ReconcileEngine:
                 "reconcile.awaiting_approval", outcome,
             )
         self.state.set_preview(operation_id, preview)
+        self.state.begin_apply(operation_id)
         try:
             adapter.apply(desired, artifact)
         except Exception as exc:

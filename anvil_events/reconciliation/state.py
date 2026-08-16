@@ -22,6 +22,30 @@ class ReconcileState:
         operation_id = self.operation_id(node, desired["event_id"])
         with self.store.transaction(immediate=True) as conn:
             try:
+                abandoned = conn.execute(
+                    """
+                    SELECT operation_id FROM reconcile_applications
+                     WHERE node = ? AND resource = ?
+                    """,
+                    (node, payload["resource"]),
+                ).fetchone()
+                if abandoned is not None:
+                    conn.execute(
+                        """
+                        UPDATE reconcile_attempts
+                           SET state = 'INDETERMINATE',
+                               error = 'process ended during external apply',
+                               completed_at = ?
+                         WHERE operation_id = ?
+                        """,
+                        (time.time(), abandoned["operation_id"]),
+                    )
+                    conn.execute(
+                        "DELETE FROM reconcile_applications WHERE operation_id = ?",
+                        (abandoned["operation_id"],),
+                    )
+                    if abandoned["operation_id"] == operation_id:
+                        return "indeterminate", operation_id
                 current = conn.execute(
                     "SELECT * FROM reconcile_resources WHERE node = ? AND resource = ?",
                     (node, payload["resource"]),
@@ -78,6 +102,29 @@ class ReconcileState:
             except Exception:
                 raise
 
+    def begin_apply(self, operation_id):
+        with self.store.transaction(immediate=True) as conn:
+            attempt = conn.execute(
+                """
+                SELECT node, resource FROM reconcile_attempts
+                 WHERE operation_id = ? AND state = 'PREPARED'
+                """,
+                (operation_id,),
+            ).fetchone()
+            if attempt is None:
+                raise ValueError("reconciliation attempt is not ready to apply")
+            conn.execute(
+                """
+                INSERT INTO reconcile_applications(
+                    operation_id, node, resource, started_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    operation_id, attempt["node"], attempt["resource"],
+                    time.time(),
+                ),
+            )
+
     def set_preview(self, operation_id, preview, awaiting_approval=False):
         encoded = json.dumps({
             "summary": preview.summary,
@@ -99,6 +146,12 @@ class ReconcileState:
         payload = desired["payload"]
         with self.store.transaction(immediate=True) as conn:
             try:
+                applying = conn.execute(
+                    "SELECT 1 FROM reconcile_applications WHERE operation_id = ?",
+                    (operation_id,),
+                ).fetchone()
+                if applying is None:
+                    raise ValueError("reconciliation attempt is not applying")
                 current = conn.execute(
                     "SELECT generation, revision, content_sha256 FROM reconcile_resources "
                     "WHERE node = ? AND resource = ?",
@@ -139,6 +192,10 @@ class ReconcileState:
                     """,
                     (time.time(), operation_id),
                 )
+                conn.execute(
+                    "DELETE FROM reconcile_applications WHERE operation_id = ?",
+                    (operation_id,),
+                )
             except Exception:
                 raise
 
@@ -153,5 +210,9 @@ class ReconcileState:
                 """,
                 (state, str(error)[:300], time.time(), operation_id),
             ).rowcount
+            conn.execute(
+                "DELETE FROM reconcile_applications WHERE operation_id = ?",
+                (operation_id,),
+            )
         if not changed:
             raise ValueError("unknown reconciliation attempt")

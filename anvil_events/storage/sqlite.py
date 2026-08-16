@@ -58,7 +58,13 @@ class SQLiteStore:
     def append_journal(self, event):
         return self.events.append_journal(event)
 
-    def record_puback(self, event, puback):
+    def record_puback(self, event, puback, expected_stream=None):
+        if (expected_stream is not None
+                and (not isinstance(puback, dict)
+                     or puback.get("stream") != expected_stream)):
+            raise ValueError(
+                f"PubAck stream differs from expected {expected_stream!r}"
+            )
         return self.events.record_puback(event, puback)
 
     def ack(self, event, puback=None):

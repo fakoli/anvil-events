@@ -47,13 +47,24 @@ class V2DomainTests(unittest.TestCase):
             self.assertFalse(validate_event_v2(changed)[0])
 
     def test_credentials_are_rejected_at_any_depth(self):
-        for key in ("api_key", "apiKey", "client-secret", "authorization"):
+        for key in (
+            "api_key", "apiKey", "client-secret", "authorization",
+            "private_key", "privateKey", "ssh_private_key", "access_key_id",
+        ):
             payload = {"outer": [{key: "never-store-this"}]}
             with self.assertRaisesRegex(ValueError, "credential-shaped"):
                 make_event_v2(
                     "node-a:plugin", "plugin.changed", "node-a", payload,
                     producer_seq=1,
                 )
+
+    def test_private_key_material_is_rejected_even_under_generic_key(self):
+        with self.assertRaisesRegex(ValueError, "credential-shaped"):
+            make_event_v2(
+                "node-a:plugin", "plugin.changed", "node-a",
+                {"value": "-----BEGIN PRIVATE KEY-----\nsynthetic\n"},
+                producer_seq=1,
+            )
 
     def test_network_urls_are_not_event_control_data(self):
         for value in (

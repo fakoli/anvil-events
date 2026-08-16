@@ -7,6 +7,7 @@ import os
 import secrets
 import socket
 
+from .jetstream import validate_stream_config, verify_stream_config
 from .protocol import (
     MAX_BODY,
     VALID_TOKEN,
@@ -159,33 +160,13 @@ class NATSClient:
 
     def configure_stream(self, config, timeout=5):
         """Create a stream or verify that the existing stream matches exactly."""
-        if not isinstance(config, dict):
-            raise ValueError("stream config must be an object")
-        name = config.get("name")
-        subjects = config.get("subjects")
-        if not isinstance(name, str) or not VALID_TOKEN.fullmatch(name):
-            raise ValueError("stream config requires a safe name")
-        if not isinstance(subjects, list) or not subjects:
-            raise ValueError("stream config requires subjects")
-        for subject in subjects:
-            validate_subject(subject, allow_wildcards=True)
+        name = validate_stream_config(config)
         existing = self._request_json_raw(
             f"$JS.API.STREAM.INFO.{name}", {}, timeout,
         )
         error = existing.get("error")
         if not error:
-            actual = existing.get("config")
-            if not isinstance(actual, dict):
-                raise OSError("JetStream stream info omitted its config")
-            mismatches = [
-                key for key, value in config.items()
-                if actual.get(key) != value
-            ]
-            if mismatches:
-                raise OSError(
-                    "existing JetStream stream differs in: "
-                    + ", ".join(mismatches)
-                )
+            actual = verify_stream_config(config, existing, "stream info")
             return {"created": False, "config": actual}
         if not isinstance(error, dict) or error.get("code") != 404:
             code = error.get("code") if isinstance(error, dict) else "malformed"
@@ -201,7 +182,17 @@ class NATSClient:
         )
         if created.get("error"):
             raise OSError(f"JetStream stream create failed: {created['error']}")
-        return {"created": True, "config": created.get("config", config)}
+        verify_stream_config(config, created, "create response")
+        confirmed = self._request_json_raw(
+            f"$JS.API.STREAM.INFO.{name}", {}, timeout,
+        )
+        if confirmed.get("error"):
+            raise OSError(
+                "JetStream created stream could not be verified: "
+                f"{confirmed['error']}"
+            )
+        actual = verify_stream_config(config, confirmed, "post-create info")
+        return {"created": True, "config": actual}
 
     def bind_durable_consumer(self, stream, durable, filter_subject, timeout=5):
         for token in (stream, durable):

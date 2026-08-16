@@ -49,7 +49,7 @@ class EventsService:
             processor=runtime.processor if runtime else None,
         )
         self.delivery = DeliveryPump(
-            self.store, url, self.stop_event, self.stats,
+            self.store, url, self.stop_event, self.stats, stream=stream,
         )
         self.reconciliation_enabled = runtime is not None
         self.health = HealthServer(health, self.health_snapshot, self.stop_event)

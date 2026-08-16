@@ -14,6 +14,8 @@ class HealthServer:
         self.stop_event = stop_event
         self.socket = None
         self.thread = None
+        self._active = None
+        self._active_lock = threading.Lock()
 
     def start(self):
         if self.thread is not None:
@@ -39,7 +41,14 @@ class HealthServer:
         while not self.stop_event.is_set():
             try:
                 connection, _ = self.socket.accept()
-                self._respond(connection)
+                with self._active_lock:
+                    self._active = connection
+                try:
+                    self._respond(connection)
+                finally:
+                    with self._active_lock:
+                        if self._active is connection:
+                            self._active = None
             except TimeoutError:
                 continue
             except OSError:
@@ -47,6 +56,7 @@ class HealthServer:
                     break
 
     def _respond(self, connection):
+        connection.settimeout(0.5)
         try:
             request = connection.recv(4096).split(b"\r\n", 1)[0].split()
             path = request[1].decode("ascii") if len(request) >= 2 else "/"
@@ -73,10 +83,20 @@ class HealthServer:
             connection.close()
 
     def close(self, timeout=5):
+        self.stop_event.set()
         if self.socket is not None:
             try:
                 self.socket.close()
             except OSError:
                 pass
+        with self._active_lock:
+            active = self._active
+        if active is not None:
+            try:
+                active.close()
+            except OSError:
+                pass
         if self.thread is not None and self.thread is not threading.current_thread():
             self.thread.join(timeout)
+            if self.thread.is_alive():
+                raise RuntimeError("health server did not stop")
