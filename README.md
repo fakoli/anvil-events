@@ -16,8 +16,8 @@ Version 0.2 is a source redesign and is **not deployed**. The composable core,
 SQLite store, secured NATS client, managed-file reconciler, migration path, and
 130 hermetic tests run natively on Windows and Linux. Clean container probes
 also prove exact apply, broker-outage catch-up, mTLS identity mapping, and
-negative cross-node ACLs. CI is configured for Windows, macOS, and Linux;
-those remote jobs and live fleet acceptance remain gates.
+negative cross-node ACLs. Exact-head CI passes on Windows, macOS, and Linux;
+live fleet acceptance remains a separate private deployment gate.
 
 The prior 0.1 implementation is assessed in
 [`docs/assessment/2026-08-16-baseline-assessment.md`](docs/assessment/2026-08-16-baseline-assessment.md).
