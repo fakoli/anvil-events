@@ -5,6 +5,7 @@ import json
 import socket
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -319,6 +320,42 @@ class HealthTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
         finally:
             client.close()
+
+    def test_slow_header_client_cannot_starve_following_request(self):
+        stop = threading.Event()
+        health = HealthServer(
+            ("127.0.0.1", 0), lambda: self._snapshot(), stop,
+        )
+        health.start()
+        slow = socket.create_connection(health.address, timeout=2)
+        dripping = threading.Event()
+
+        def drip_header():
+            try:
+                while not dripping.wait(0.1):
+                    slow.sendall(b"x")
+            except OSError:
+                pass
+
+        drip = threading.Thread(target=drip_header)
+        slow.sendall(b"G")
+        drip.start()
+        try:
+            time.sleep(0.1)
+            client = socket.create_connection(health.address, timeout=2)
+            client.settimeout(1)
+            started = time.monotonic()
+            client.sendall(b"GET /live HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            response = client.recv(4096)
+            elapsed = time.monotonic() - started
+            client.close()
+            self.assertIn(b"200 OK", response)
+            self.assertLess(elapsed, 0.9)
+        finally:
+            dripping.set()
+            slow.close()
+            drip.join(1)
+            health.close()
 
 
 class CLITests(unittest.TestCase):

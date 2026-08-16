@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 
 
 class HealthServer:
@@ -57,10 +58,14 @@ class HealthServer:
                     break
 
     def _respond(self, connection):
-        connection.settimeout(0.5)
+        deadline = time.monotonic() + 0.5
         try:
             raw = b""
             while b"\r\n\r\n" not in raw and len(raw) <= 8192:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("HTTP request header deadline expired")
+                connection.settimeout(remaining)
                 chunk = connection.recv(8193 - len(raw))
                 if not chunk:
                     break
