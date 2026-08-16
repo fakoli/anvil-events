@@ -67,23 +67,24 @@ The session WILL run long. When context runs low:
 |---|---|---|
 | R1 | audit + research correction + composable domain/storage | ✅ DONE — PRs #1/#2 merged; review blockers fixed; CI green |
 | R2 | secure transport + reconciliation + portable runtime | ✅ DONE — PRs #1/#2 merged; review blockers fixed; CI/acceptance green |
-| R3 | public anvil-serving lifecycle seam | pending |
-| R4 | private manifests + canary | pending separate authorization |
-| R5 | staged rollout + live acceptance | pending separate authorization |
+| R3 | public anvil-serving lifecycle seam | ✅ DONE — public lifecycle seam and fixes merged; exact-head CI green |
+| R4 | private manifests + canary | ✅ DONE — portable product support merged; private reference canary and rollback passed |
+| R5 | staged rollout + live acceptance | ✅ DONE — v0.2.2 released; four-node reference fleet accepted |
 
-**Last completed action:** R1/R2 correction PR #2 merged at `af688436`; all
-exact-head source and synthetic acceptance gates pass. No installation, route
-change, service restart, private manifest, or live deployment was performed.
+**Last completed action:** the live duplicate-delivery defect found during R5
+was fixed in PR #10 and released as v0.2.2 at
+`c1a08bd82d7f43da7f166a43aab2818c84a79360`. Exact-head CI, staged
+installation, broker-loss recovery, and private live acceptance pass.
 
 ## 5. Repo facts (for quick orientation)
 
 - Public repo: `fakoli/anvil-events` on GitHub. Branch: `main`.
 - Git identity: `Sekou Doumbouya <sdoumbouya81@gmail.com>`.
 - Test command: `python -W error::ResourceWarning -m unittest discover -s tests -q`
-  (currently 130 pass on Windows and Linux; one Windows-only test is skipped
-  on Linux).
+  (currently 161 pass).
 - Lint: `ruff check .`.
-- Current v0.2 source is not installed or deployed by this workflow.
+- v0.2.2 is installed on the private four-node reference topology. Live
+  identities, routes, rollback paths, and raw evidence remain private.
 - Real service, broker, topology, and route state belong in the private
   operator repository; do not copy them into this public file.
 - Review model: `gpt-5.6-sol` through the authenticated Codex OpenAI provider.
