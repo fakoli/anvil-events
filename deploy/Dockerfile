@@ -7,10 +7,19 @@ WORKDIR /app
 COPY . /app
 RUN pip install --no-cache-dir .
 
+RUN groupadd --system anvil-events \
+    && useradd --system --gid anvil-events --home-dir /var/lib/anvil/events anvil-events \
+    && mkdir -p /var/lib/anvil/events \
+    && chown -R anvil-events:anvil-events /var/lib/anvil/events \
+    && chmod -R a-w /app
+
 EXPOSE 9877
 VOLUME ["/var/lib/anvil/events"]
 
 ENV ANVIL_EVENTS_NATS_URL=nats://127.0.0.1:4222
 ENV ANVIL_EVENTS_ROOT=/var/lib/anvil/events
 
-ENTRYPOINT ["anvil-events", "serve", "--root", "/var/lib/anvil/events"]
+USER anvil-events
+
+ENTRYPOINT ["anvil-events"]
+CMD ["--root", "/var/lib/anvil/events", "serve", "--health-host", "0.0.0.0"]

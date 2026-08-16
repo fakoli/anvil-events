@@ -1,17 +1,21 @@
 [Unit]
-Description=anvil-events daemon (subscriber + journal)
-After=network-online.target nats.service
+Description=anvil-events convergence agent
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/anvil-events serve --root /var/lib/anvil/events --subject anvil.fleet.>
-Environment=ANVIL_EVENTS_NATS_URL=nats://127.0.0.1:4222
-# ANVIL_EVENTS_ALLOWED_PRODUCERS intentionally UNSET: default-deny.
-# Authorize the fleet producers via an EnvironmentFile or drop-in, e.g.:
-#   Environment=ANVIL_EVENTS_ALLOWED_PRODUCERS=node-a:serves,node-b:serves
+User=anvil-events
+Group=anvil-events
+EnvironmentFile=/etc/anvil-events/events.env
+ExecStart=/usr/local/bin/anvil-events --root /var/lib/anvil/events serve --config /etc/anvil-events/node.toml --durable node-events
 Restart=on-failure
 RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/anvil/events
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,5 @@
+recursive-include tests *.py
+recursive-include deploy *.conf *.json *.toml
+recursive-include deploy/artifacts *
+recursive-include schemas *.json
+recursive-include tools *.py

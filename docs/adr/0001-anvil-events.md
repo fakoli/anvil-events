@@ -1,13 +1,16 @@
 # ADR-0001 — anvil-events: fleet lifecycle event bus and journal
 
-- **Status:** Accepted; implemented through M1–M5 and post-v1.0 correction
-  reviews.
+- **Status:** Superseded for new nodes by ADR-0003. Retained as v1 history.
 - **Date:** 2026-08-12
 - **Relates to:** anvil (orchestration), anvil-serving (serving); ADR-0035
   (config reconciliation) and ADR-0036 (voice relocation) in anvil-serving
 - **Amends:** none (new repo)
 
 ## Context
+
+> Historical note: the completion, JSONL authority, LogPlayer, security, and
+> live-rollout claims below describe the v1 project record and are not current
+> v2 claims. See ADR-0003 and the 2026-08-16 baseline assessment.
 
 The Anvil family spans anvil (coordination, leases, evidence-gated state) and
 anvil-serving (model serves + capability gateway). A recurring operator pain:

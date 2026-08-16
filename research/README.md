@@ -7,12 +7,12 @@ Published theory mapped onto the anvil-events design. Each paper has a
 
 ## Index
 
-| Paper | arXiv | Year | Builds in anvil-events |
+| Paper | arXiv | Year | Bounded use in anvil-events |
 |---|---|---|---|
-| LogPlayer: Fault-tolerant Exactly-once Delivery | [1911.11286](https://arxiv.org/abs/1911.11286) | 2019 | `anvil_events/outbox.py` `TargetQueue` (S/RF/FC/N + terms), recovery-stream protocol, outbox cursors |
+| LogPlayer: Fault-tolerant Exactly-once Delivery | [1911.11286](https://arxiv.org/abs/1911.11286) | 2019 | Safety/liveness/target-state vocabulary; JetStream owns recovery and no LogPlayer implementation is claimed. |
 | Delivery, consistency, and determinism | [1907.06250](https://arxiv.org/abs/1907.06250) | 2019 | guarantees-by-axis contract (PRD "Reliability contract") |
 | Lamport's Arrow of Time: The Category Mistake in Logical Clocks | [2602.21730](https://arxiv.org/abs/2602.21730) | 2026 | per-producer epistemic ordering (no global sequencer) |
-| Checking Causal Consistency of Distributed Databases | [2011.09753](https://arxiv.org/abs/2011.09753) | 2020 | `anvil_events/outbox.py` `CausalChecker` + `anvil-events verify` |
+| Checking Causal Consistency of Distributed Databases | [2011.09753](https://arxiv.org/abs/2011.09753) | 2020 | Scope boundary: `DependencyGraphChecker` checks a DAG but does not implement the paper's database-history conformance model. |
 
 ## Reading order
 
@@ -23,7 +23,6 @@ Published theory mapped onto the anvil-events design. Each paper has a
 
 ## Status
 
-Papers fetched 2026-08-12 via the arxiv skill (export.arxiv.org API) and
-Semantic Scholar metadata lookups (rate-limited that day; arXiv metadata is
-authoritative). All four are implemented or contract-mapped in the current
-code; see `anvil_events/` and `tests/`.
+Papers were fetched on 2026-08-12. The original implementation mapping was
+audited and corrected on 2026-08-16. These papers inform contracts and scope;
+none is presented as a formal verification of the current code.

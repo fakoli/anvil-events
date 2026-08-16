@@ -1,88 +1,87 @@
-# anvil-events — event vocabulary (v1)
+# Event vocabulary and envelope
 
-Versioned, append-only lifecycle events for the Anvil family. A single
-`anvil-events` JSON document is the contract; `version` is the schema version,
-`kind` is enumerated, `subject` is the NATS-style hierarchical topic,
-`payload` is a per-kind allowlisted JSON object. Unknown top-level payload keys
-or incorrect scalar types are rejected by the producer and the gateway ingest
-gate; nested state objects on `divergence` are recursively redacted before
-fact storage.
+V2 is the normative contract for new producers. V1 remains readable only for
+compatibility and explicit legacy migration.
 
-## Event envelope (v1 — normative)
+## V2 envelope
 
 ```json
 {
-  "version": 1,
-  "event_id": "node-a:serves:000123",
-  "producer": "node-a:serves",
+  "version": 2,
+  "event_id": "node-a:router:000123",
+  "producer": "node-a:router",
   "producer_seq": 123,
-  "observed_at": "2026-08-13T02:08:55.000Z",
-  "emitted_at": "2026-08-13T02:08:55.120Z",
-  "correlation_id": "promote-example-20260812-01",
-  "schema": "https://anvil.dev/schemas/events/v1.json",
-  "host": "node-a",
-  "kind": "promote.applied",
-  "subject": "anvil.fleet.node-a.promote.applied",
+  "observed_at": "2026-08-16T18:00:00.000Z",
+  "emitted_at": "2026-08-16T18:00:00.000Z",
+  "correlation_id": "route-change-42",
+  "schema": "https://anvil.dev/schemas/events/v2.json",
+  "node": "node-a",
+  "kind": "state.desired",
+  "subject": "anvil.events.v2.node-a.state.desired",
   "payload": {
-    "promotion": "ops-2026-08-13",
-    "tier": "primary",
-    "model": "example-llm-pr-...-tp2-393k",
-    "context": 131072,
-    "rollback": "example-rollback"
+    "resource": "routing/clients",
+    "generation": 42,
+    "revision": "immutable-revision",
+    "content_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "adapter": "router_config",
+    "artifact": "routing/clients",
+    "targets": ["node-b"]
   },
   "causes": []
 }
 ```
 
-`causes` is an optional v1 array of explicit causal predecessor event IDs.
-New producers emit an empty array; consumers accept older v1 envelopes that
-omit it.
+`producer` must start with the exact `node` token. `event_id` and `subject` are
+derived. Timestamps are RFC 3339 diagnostics; ordering decisions use producer
+sequence and resource generation.
 
-## Kinds (canonical, frozen)
+Payloads are JSON-only, bounded, and may not contain credential-shaped keys or
+network URLs. Desired events carry logical references; locally configured
+manifests own real endpoints, paths, and credential environment-variable
+names.
 
-| kind | subject (suffix) | payload highlights | emitted by |
-|---|---|---|---|
-| `serve.up` | `.serve.up` | serve name, model, port, gpu_roles, residency | `anvil-serving serves up` |
-| `serve.down` | `.serve.down` | serve name, graceful | `anvil-serving serves down` |
-| `profile.enter` | `.profile.enter` | mode (split/exclusive), profile id, exclusive_target | `serves profile enter` |
-| `profile.leave` | `.profile.leave` | mode, profile id, restore group | `serves profile leave` |
-| `promote.applied` | `.promote.applied` | promotion, tier, model, context, rollback | `serves promote` |
-| `promote.rolled_back` | `.promote.rolled_back` | tier, restored model | `serves promote --rollback` |
-| `config.adopted` | `.config.adopted` | file(s), repo, rev; `correlation_id` links to promote | commit-push-on-promote wrapper |
-| `repo.synced` | `.repo.synced` | repo, pushed rev, ok/failed; `correlation_id` links | the operator commit-push hook |
-| `host.status` | `.host.status` | host, reachable, gpu used/free | periodic host probe / `host status` |
-| `divergence` | `.divergence` | declared vs live mismatch, delta | reconciliation probe |
-| `event.degraded` | `.event.degraded` | cause (outbox full, publish failed), pending entries | event subsystem itself |
+## Normative convergence kinds
 
-`config.adopted_mirror` was removed in v1 (redundant with `config.adopted`).
-`router-updated` is not a kind; router moves are `promote.applied` /
-`config.adopted` / `divergence`.
+| Kind | Required payload | Meaning |
+|---|---|---|
+| `state.desired` | resource, generation, revision, content SHA-256, adapter, artifact | An authority declares exact desired bytes. |
+| `reconcile.applied` | resource, generation, revision, content SHA-256, adapter | A node applied and verified the generation. |
+| `reconcile.failed` | resource, generation, revision, adapter, error | A node rejected, failed, rolled back, or classified an attempt. |
+| `reconcile.awaiting_approval` | resource, generation, revision, adapter | Local policy did not permit automatic apply. |
+| `operation.indeterminate` | operation ID, error | An external side effect cannot be classified safely. |
+| `delivery.degraded` | event ID, error | Delivery remains pending after a bounded failure. |
 
-## Subject grammar (corrected wildcards)
+Other dotted lowercase kinds are permitted for generic lifecycle facts. New
+kinds do not automatically gain reconciliation behavior; a registered
+processor/adapter and tests are required.
 
+## Subject and ACL shape
+
+```text
+anvil.events.v2.>                    all v2 events
+anvil.events.v2.<node>.>             all events emitted by one node
+anvil.events.v2.<node>.<kind>        one node and kind
 ```
-anvil.fleet.>                         # ALL fleet events (multi-token)
-anvil.fleet.<host>.>                  # all events for one host (multi-token)
-anvil.fleet.<host>.<kind>             # one host, one kind
-anvil.<product>.<host>.<kind>         # product-scoped (anvil / anvil-serving)
-```
 
-`>` matches one-or-more tokens; `*` matches exactly one. Use `>` for fleet-wide
-and host-wide subscriptions.
+The authenticated principal for `<node>` may publish only that node prefix.
+The subscriber rejects a body whose subject differs from the actual broker
+subject. Durable delivery and ACK/API permissions are separately scoped in the
+fleet NATS configuration.
 
-## Journal + outbox
+## Local and broker state
 
-- **Producer-local outbox** (authoritative): append-only JSONL
-  `events/outbox/<YYYY-MM-DD>.jsonl`, fsync'd on write, per producer.
-  This is the durable record that the change happened.
-- **JetStream mirror** (fleet): `deploy/nats-stream.json` defines the
-  file-backed `ANVIL` stream over `anvil.fleet.>` with 7-day retention and
-  `Nats-Msg-Id` deduplication.
-- **Delivery:** producers retain an event in the local outbox until a positive
-  JetStream PubAck. The daemon retries pending entries after reconnect and
-  archives them only after durable stream storage is acknowledged.
-- **Replay:** local replay combines producer outbox/archive and the deduplicated
-  subscriber journal. Fleet late-subscriber history remains in JetStream for
-  seven days; per-producer order only, duplicates resolved by `event_id`.
-- **Rotation/retention:** outbox rotated on completion (published entries move
-  to `events/archive/`); policy in ADR-0001.
+- SQLite is the producer and subscriber state store.
+- A newly recorded event is `pending` until a positive JetStream PubAck.
+- PubAck stream/sequence evidence and the producer cursor commit atomically.
+- Subscriber journaling is idempotent by canonical event ID.
+- JetStream retains history indefinitely by default so new and long-offline
+  nodes can replay current desired state. Finite retention requires a separate
+  tested snapshot/compaction path.
+- Local archive retention defaults to 90 days and emits a local audit event
+  into the local journal, not the fleet outbox, when records expire.
+
+## V1 compatibility
+
+The frozen v1 kinds and schema remain in `domain.py` and
+`schemas/events-v1.json`. New code must not use v1 to declare desired state.
+The removed JSONL writer cannot be reopened; use `migrate-legacy`.

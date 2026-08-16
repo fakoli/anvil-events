@@ -6,6 +6,7 @@ dist/
 .venv/
 venv/
 .ruff_cache/
+.coverage
 events/          # local event roots (outbox/archive) are operator data
 *.local.toml
 .DS_Store
