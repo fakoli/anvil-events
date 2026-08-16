@@ -65,13 +65,15 @@ class ReconcileState:
                             )
                         owner = conn.execute(
                             """
-                            SELECT operation_id FROM reconcile_attempts
+                            SELECT operation_id, state FROM reconcile_attempts
                              WHERE node = ? AND resource = ? AND generation = ?
                             """,
                             (node, payload["resource"], payload["generation"]),
                         ).fetchone()
                         if owner is not None:
                             operation_id = owner["operation_id"]
+                            if owner["state"] != "APPLIED":
+                                return owner["state"].lower(), operation_id
                         return "applied", operation_id
                 attempt = conn.execute(
                     "SELECT state FROM reconcile_attempts WHERE operation_id = ?",

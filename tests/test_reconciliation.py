@@ -210,6 +210,28 @@ class ReconcileEngineTests(unittest.TestCase):
 
         self.assertEqual("applied", self._engine().process(event).state)
 
+    def test_indeterminate_drift_repair_is_never_applied_again(self):
+        adapter = RepairingAdapter()
+        registry = AdapterRegistry()
+        registry.register(adapter)
+        engine = ReconcileEngine(
+            "node-b", self.store, registry, FakeResolver(),
+            AllowBindingsPolicy({
+                ("node-a:router", "routing/clients", "router_config"),
+            }),
+        )
+        event = self._journal(desired_event(targets=["node-b"]))
+        self.assertEqual("applied", engine.process(event).state)
+        adapter.drifted = True
+        adapter.apply_error = OSError("external apply result is unknown")
+
+        first = engine.process(event)
+        second = engine.process(event)
+
+        self.assertEqual("indeterminate", first.state)
+        self.assertEqual("indeterminate", second.state)
+        self.assertEqual(2, adapter.applied)
+
     def test_deny_by_default_waits_without_apply(self):
         event = self._journal(desired_event(targets=["node-b"]))
         result = self._engine(allow=False).process(event)
