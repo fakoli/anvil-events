@@ -23,15 +23,16 @@ from anvil_events.storage import SQLiteStore
 
 
 class FakePublisher:
-    def __init__(self, error=None):
+    def __init__(self, error=None, stream="ANVIL_EVENTS"):
         self.error = error
+        self.stream = stream
         self.published = []
 
     def publish_js(self, subject, event, **options):
         self.published.append((subject, event, options))
         if self.error:
             raise self.error
-        return {"stream": "ANVIL_EVENTS", "seq": 11, "duplicate": False}
+        return {"stream": self.stream, "seq": 11, "duplicate": False}
 
     def close(self):
         pass
@@ -131,6 +132,19 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertEqual((1, 1), (attempted, failed))
         self.assertEqual(1, self.store.count_pending())
         self.assertIn(event["event_id"], pump.retry)
+
+    def test_wrong_stream_puback_preserves_pending(self):
+        event = self.store.emit_v2(
+            "node-a:router", "state.desired", "node-a", desired_payload(),
+        )
+        pump = DeliveryPump(
+            self.store, "nats://127.0.0.1:4222", self.stop, self.stats,
+        )
+        attempted, failed = pump.deliver(
+            FakePublisher(stream="WRONG_STREAM"), [event],
+        )
+        self.assertEqual((1, 1), (attempted, failed))
+        self.assertEqual(1, self.store.count_pending())
 
     def test_delivery_run_connects_and_drains(self):
         self.store.emit_v2(
@@ -258,6 +272,19 @@ class HealthTests(unittest.TestCase):
                 health.start()
         finally:
             occupied.close()
+
+    def test_idle_health_client_cannot_block_shutdown(self):
+        stop = threading.Event()
+        health = HealthServer(
+            ("127.0.0.1", 0), lambda: self._snapshot(), stop,
+        )
+        thread = health.start()
+        client = socket.create_connection(health.address, timeout=2)
+        try:
+            health.close(timeout=2)
+            self.assertFalse(thread.is_alive())
+        finally:
+            client.close()
 
 
 class CLITests(unittest.TestCase):

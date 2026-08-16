@@ -21,12 +21,12 @@ Evidence: concurrent sequence and atomic-record tests.
 
 ## INV-3: PubAck gates delivery completion
 
-An unknown event cannot be acknowledged. For a known pending event, PubAck
-evidence, `acked` state, and cursor update commit in one SQLite transaction.
-Conflicting evidence fails closed.
+An unknown event cannot be acknowledged. For a known pending event, an exact
+configured-stream PubAck, `acked` state, and cursor update commit in one SQLite
+transaction. Wrong-stream and conflicting evidence fail closed.
 
-Evidence: PubAck/cursor, unknown event, and conflicting evidence tests. A real
-broker PubAck/fault proof remains a Compose/live gate.
+Evidence: PubAck/cursor, unknown event, wrong-stream, and conflicting evidence
+tests. A real broker PubAck/fault proof remains a Compose/live gate.
 
 ## INV-4: poison data cannot block valid state silently
 
@@ -61,11 +61,14 @@ binding tests.
 
 ## INV-7: apply is verified or classified
 
-Successful apply must pass adapter verification before `reconcile.applied`.
-Verification failure attempts rollback and records failure. An exception during
-apply is `INDETERMINATE` and is not automatically applied again.
+One cross-process resource lock serializes preview/apply/verify/complete. A
+durable applying row precedes the external side effect. Successful apply must
+pass adapter verification before `reconcile.applied`. Verification failure
+attempts rollback and records failure. An apply exception or abandoned applying
+row is `INDETERMINATE` and is not automatically applied again.
 
-Evidence: apply, verification rollback, and indeterminate replay tests.
+Evidence: same-event and N/N+1 exclusion, abandoned-apply recovery, apply,
+verification rollback, and indeterminate replay tests.
 
 ## INV-8: broker ACK follows durable local processing
 

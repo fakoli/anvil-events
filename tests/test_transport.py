@@ -356,9 +356,20 @@ class StreamConfigurationTests(unittest.TestCase):
         responses = iter([
             {"error": {"code": 404, "description": "not found"}},
             {"config": self._config()},
+            {"config": self._config()},
         ])
         client._request_json_raw = lambda *args: next(responses)
         self.assertTrue(client.configure_stream(self._config())["created"])
+
+    def test_stream_create_response_drift_is_rejected(self):
+        client = NATSClient()
+        responses = iter([
+            {"error": {"code": 404, "description": "not found"}},
+            {"config": {**self._config(), "storage": "memory"}},
+        ])
+        client._request_json_raw = lambda *args: next(responses)
+        with self.assertRaisesRegex(OSError, "storage"):
+            client.configure_stream(self._config())
 
     def test_existing_identical_stream_is_verified(self):
         client = NATSClient()

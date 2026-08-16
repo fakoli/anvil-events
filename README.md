@@ -14,7 +14,7 @@ deployment repository.
 
 Version 0.2 is a source redesign and is **not deployed**. The composable core,
 SQLite store, secured NATS client, managed-file reconciler, migration path, and
-117 hermetic tests run natively on Windows and Linux. Clean container probes
+130 hermetic tests run natively on Windows and Linux. Clean container probes
 also prove exact apply, broker-outage catch-up, mTLS identity mapping, and
 negative cross-node ACLs. CI is configured for Windows, macOS, and Linux;
 those remote jobs and live fleet acceptance remain gates.
@@ -45,13 +45,15 @@ credentials, and automatic-apply policy.
 ## Guarantees
 
 - Local acceptance: one durable canonical event per idempotency key.
-- Broker delivery: at least once; a positive PubAck proves stream storage.
+- Broker delivery: at least once; only a PubAck from the configured stream
+  completes local pending work.
 - Journal identity: one canonical row per event ID; equivocation fails closed.
 - Resource order: generations are monotonic per resource and authority.
 - Auto-apply authority: an exact producer/resource/adapter binding is owned by
   each node manifest; a node-wide producer allowlist is insufficient.
-- External apply: idempotent at least once unless an adapter can prove a
-  stronger atomic apply-plus-cursor contract.
+- External apply: one serialized automatic attempt. A crash after the durable
+  applying marker is indeterminate and requires explicit recovery; it is never
+  silently replayed.
 - Convergence: after faults stop and policy permits, a healthy subscribed node
   reaches the latest accepted generation.
 

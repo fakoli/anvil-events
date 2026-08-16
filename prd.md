@@ -138,10 +138,10 @@ is `INDETERMINATE` and is never silently retried.
 | Axis | Contract |
 |---|---|
 | Local acceptance | Exactly one canonical event per idempotency key. |
-| Broker delivery | At least once; PubAck proves stream persistence. |
+| Broker delivery | At least once; an exact configured-stream PubAck proves persistence. |
 | Local journal | One canonical row per event ID; conflicts rejected. |
 | Ordering | Per producer plus per-resource generation; no global sequence. |
-| External application | Idempotent at least once unless an adapter proves stronger atomicity. |
+| External application | Serialized once automatically; uncertain crashes require explicit recovery. |
 | Consistency | Desired bytes are revision- and digest-bound; outcome follows verify/rollback. |
 | Determinism | Canonical JSON and conflict rules make replay decisions repeatable. |
 | Liveness | After faults stop, policy permits, and replayable artifacts remain available, healthy subscribed nodes converge. |

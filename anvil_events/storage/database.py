@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 
 DATABASE_NAME = "events.db"
@@ -49,37 +50,70 @@ class Database:
 
     def _initialize(self):
         with self.connect() as connection:
-            mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+            mode = _enable_wal(connection)
             if str(mode).lower() != "wal":
                 raise OSError(f"SQLite WAL mode unavailable: {mode!r}")
-            application_id = connection.execute(
-                "PRAGMA application_id",
-            ).fetchone()[0]
-            user_tables = connection.execute(
-                """
-                SELECT name FROM sqlite_master
-                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-                """
-            ).fetchall()
-            if application_id not in (0, APPLICATION_ID):
-                raise RuntimeError("database belongs to another application")
-            if application_id == 0 and user_tables:
-                raise RuntimeError(
-                    "refusing to initialize over an unowned SQLite database"
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                application_id = connection.execute(
+                    "PRAGMA application_id",
+                ).fetchone()[0]
+                user_tables = connection.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                     WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                    """
+                ).fetchall()
+                if application_id not in (0, APPLICATION_ID):
+                    raise RuntimeError("database belongs to another application")
+                if application_id == 0 and user_tables:
+                    raise RuntimeError(
+                        "refusing to initialize over an unowned SQLite database"
+                    )
+                current = connection.execute("PRAGMA user_version").fetchone()[0]
+                if current not in (0, SCHEMA_VERSION):
+                    raise RuntimeError(
+                        f"unsupported event-store schema {current}; "
+                        f"expected {SCHEMA_VERSION}"
+                    )
+                _apply_schema(connection)
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+                connection.execute(
+                    "INSERT OR IGNORE INTO metadata(key, value) VALUES (?, ?)",
+                    ("pending_change_counter", "0"),
                 )
-            current = connection.execute("PRAGMA user_version").fetchone()[0]
-            if current not in (0, SCHEMA_VERSION):
-                raise RuntimeError(
-                    f"unsupported event-store schema {current}; "
-                    f"expected {SCHEMA_VERSION}"
-                )
-            connection.executescript(_SCHEMA)
-            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
-            connection.execute(
-                "INSERT OR IGNORE INTO metadata(key, value) VALUES (?, ?)",
-                ("pending_change_counter", "0"),
-            )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+
+def _schema_statements():
+    statement = ""
+    for line in _SCHEMA.splitlines():
+        statement += line + "\n"
+        if sqlite3.complete_statement(statement):
+            yield statement
+            statement = ""
+    if statement.strip():
+        raise RuntimeError("incomplete SQLite schema statement")
+
+
+def _apply_schema(connection):
+    for statement in _schema_statements():
+        connection.execute(statement)
+
+
+def _enable_wal(connection, timeout=30):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.025)
 
 
 _SCHEMA = """
@@ -203,6 +237,15 @@ CREATE TABLE IF NOT EXISTS reconcile_attempts (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_reconcile_generation
     ON reconcile_attempts (node, resource, generation);
+
+CREATE TABLE IF NOT EXISTS reconcile_applications (
+    operation_id TEXT PRIMARY KEY,
+    node TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    started_at REAL NOT NULL,
+    UNIQUE (node, resource),
+    FOREIGN KEY(operation_id) REFERENCES reconcile_attempts(operation_id)
+);
 
 CREATE TABLE IF NOT EXISTS migration_runs (
     source_root TEXT PRIMARY KEY,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -22,6 +23,10 @@ from anvil_events.reconciliation.contracts import (
 from anvil_events.reconciliation.engine import ReconcileEngine
 from anvil_events.reconciliation.file_adapter import ManagedFileAdapter
 from anvil_events.reconciliation.processor import DesiredStateProcessor
+from anvil_events.reconciliation.resource_lock import (
+    ResourceBusy,
+    resource_lock,
+)
 from anvil_events.storage import SQLiteStore
 
 
@@ -63,6 +68,19 @@ class FakeAdapter:
 
     def rollback(self, desired):
         self.rolled_back += 1
+
+
+class BlockingAdapter(FakeAdapter):
+    def __init__(self):
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def apply(self, desired, artifact):
+        self.applied += 1
+        self.entered.set()
+        if not self.release.wait(5):
+            raise TimeoutError("test did not release blocking adapter")
 
 
 class ReconcileEngineTests(unittest.TestCase):
@@ -210,6 +228,83 @@ class ReconcileEngineTests(unittest.TestCase):
         engine.process(first)
         with self.assertRaisesRegex(ValueError, "conflicting"):
             engine.process(second)
+
+    def test_same_event_cannot_apply_concurrently(self):
+        event = self._journal(desired_event(targets=["node-b"]))
+        self.adapter = BlockingAdapter()
+        self.registry = AdapterRegistry()
+        self.registry.register(self.adapter)
+        engine = self._engine()
+        result = {}
+
+        def apply():
+            result["value"] = engine.process(event)
+
+        thread = threading.Thread(target=apply)
+        thread.start()
+        self.assertTrue(self.adapter.entered.wait(2))
+        with self.assertRaises(ResourceBusy):
+            engine.process(event)
+        self.adapter.release.set()
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual("applied", result["value"].state)
+        self.assertEqual(1, self.adapter.applied)
+
+    def test_newer_generation_waits_for_inflight_apply(self):
+        older = self._journal(desired_event(
+            sequence=1, generation=1, targets=["node-b"],
+        ))
+        newer = self._journal(desired_event(
+            sequence=2, generation=2, targets=["node-b"],
+        ))
+        self.adapter = BlockingAdapter()
+        self.registry = AdapterRegistry()
+        self.registry.register(self.adapter)
+        engine = self._engine()
+        thread = threading.Thread(target=lambda: engine.process(older))
+        thread.start()
+        self.assertTrue(self.adapter.entered.wait(2))
+        with self.assertRaises(ResourceBusy):
+            engine.process(newer)
+        self.adapter.release.set()
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual("applied", engine.process(newer).state)
+        with self.store.database.connect() as connection:
+            generation = connection.execute(
+                "SELECT generation FROM reconcile_resources",
+            ).fetchone()[0]
+        self.assertEqual(2, generation)
+        self.assertEqual(2, self.adapter.applied)
+
+    def test_abandoned_applying_attempt_is_indeterminate_not_replayed(self):
+        event = self._journal(desired_event(targets=["node-b"]))
+        engine = self._engine()
+        with resource_lock(
+                self.store.root, "node-b", event["payload"]["resource"]):
+            state, operation_id = engine.state.claim("node-b", event)
+            self.assertEqual("prepared", state)
+            engine.state.set_preview(
+                operation_id, Preview("synthetic", ("change",)),
+            )
+            engine.state.begin_apply(operation_id)
+        result = engine.process(event)
+        self.assertEqual("indeterminate", result.state)
+        self.assertEqual(0, self.adapter.applied)
+        with self.store.database.connect() as connection:
+            applications = connection.execute(
+                "SELECT COUNT(*) FROM reconcile_applications",
+            ).fetchone()[0]
+        self.assertEqual(0, applications)
+
+    def test_resource_lock_files_are_bounded_by_fixed_shards(self):
+        for index in range(200):
+            with resource_lock(
+                    self.store.root, "node-b", f"resource/{index}"):
+                pass
+        locks = list((Path(self.store.root) / "reconcile-locks").glob("*.lock"))
+        self.assertLessEqual(len(locks), 64)
 
 
 class BuiltInAdapterTests(unittest.TestCase):

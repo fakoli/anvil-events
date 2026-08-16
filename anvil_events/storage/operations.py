@@ -126,6 +126,11 @@ class OperationLedger:
 
     def resolve(self, operation_id, node, payload, *, succeeded=True, error=None):
         self._check("operation_id", operation_id)
+        encoded = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
+        expected_state = "APPLIED" if succeeded else "FAILED"
+        expected_error = str(error)[:300] if error is not None else None
         with self.database.transaction() as connection:
             operation = connection.execute(
                 "SELECT * FROM operations WHERE operation_id = ?",
@@ -133,26 +138,45 @@ class OperationLedger:
             ).fetchone()
             if operation is None:
                 raise ValueError(f"unknown operation {operation_id!r}")
+            if operation["state"] == "INDETERMINATE":
+                raise ValueError(
+                    "indeterminate operation requires explicit operator recovery"
+                )
             if operation["event_id"]:
-                event = json.loads(connection.execute(
+                if (operation["state"] != expected_state
+                        or operation["error"] != expected_error):
+                    raise ValueError("operation resolution conflicts with durable result")
+                row = connection.execute(
                     "SELECT envelope_json FROM events WHERE event_id = ?",
                     (operation["event_id"],),
-                ).fetchone()[0])
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("resolved operation is missing its event")
+                event = json.loads(row[0])
+                if (event["node"] != node or encoded != operation["intent_json"]
+                        or event["payload"] != payload):
+                    raise ValueError("operation resolution conflicts with durable result")
                 return event, True
+            if operation["state"] != "PREPARED":
+                raise ValueError("operation is not prepared for resolution")
+            if encoded != operation["intent_json"]:
+                raise ValueError("operation resolution differs from durable intent")
+            durable_payload = json.loads(operation["intent_json"])
             event = self.events.emit_v2_in(
                 connection, operation["producer"], operation["kind"], node,
-                payload, operation["correlation_id"],
+                durable_payload, operation["correlation_id"],
             )
-            connection.execute(
+            changed = connection.execute(
                 """
                 UPDATE operations
                    SET state = ?, resolved_at = ?, event_id = ?, error = ?
-                 WHERE operation_id = ?
+                 WHERE operation_id = ? AND state = 'PREPARED'
                 """,
-                ("APPLIED" if succeeded else "FAILED", time.time(),
-                 event["event_id"], str(error)[:300] if error else None,
+                (expected_state, time.time(), event["event_id"], expected_error,
                  operation_id),
-            )
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("operation state changed during resolution")
             return event, False
 
     def mark_indeterminate(self, operation_id, error):

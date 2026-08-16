@@ -15,7 +15,9 @@ _RESOURCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}$")
 _REVISION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SENSITIVE_KEY = re.compile(
-    r"(?:^|_)(?:token|password|passwd|secret|credential|authorization|cookie|api_key)(?:$|_)",
+    r"(?:^|_)(?:token|password|passwd|secret|credential|authorization|cookie|"
+    r"api_key|private_key|ssh_private_key|access_key(?:_id)?|secret_access_key|"
+    r"client_secret|client_key|signing_key|bearer|session_key)(?:$|_)",
     re.IGNORECASE,
 )
 _REQUIRED = frozenset([
@@ -76,9 +78,13 @@ def _contains_sensitive_key(value):
                 pending.append((child, depth + 1))
         elif isinstance(current, list):
             pending.extend((child, depth + 1) for child in current)
-        elif isinstance(current, str) and re.match(
-                r"^(?:https?|nats|tls)://", current, re.IGNORECASE):
-            return True
+        elif isinstance(current, str):
+            if re.match(r"^(?:https?|nats|tls)://", current, re.IGNORECASE):
+                return True
+            if re.search(
+                    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", current,
+                    re.IGNORECASE):
+                return True
     return False
 
 

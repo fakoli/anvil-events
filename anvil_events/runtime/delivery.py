@@ -9,12 +9,14 @@ from ..transport import NATSClient
 
 
 class DeliveryPump:
-    def __init__(self, store, url, stop_event, stats, client_factory=NATSClient):
+    def __init__(self, store, url, stop_event, stats, client_factory=NATSClient,
+                 stream="ANVIL_EVENTS"):
         self.store = store
         self.url = url
         self.stop = stop_event
         self.stats = stats
         self.client_factory = client_factory
+        self.stream = stream
         self.retry = {}
         self.seen = set()
         self.position = None
@@ -67,7 +69,9 @@ class DeliveryPump:
                     wait_ack=True,
                     timeout=5,
                 )
-                self.store.record_puback(event, puback)
+                self.store.record_puback(
+                    event, puback, expected_stream=self.stream,
+                )
                 self.stats.increment("acked")
                 self.retry.pop(event_id, None)
             except Exception as exc:

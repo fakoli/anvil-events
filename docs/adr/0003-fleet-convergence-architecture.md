@@ -105,16 +105,19 @@ Legacy JSONL is an explicit read-only migration source. Migration validates a
 stable source snapshot, detects identity conflicts, imports transactionally,
 records provenance, and never deletes the source.
 
-An external lifecycle side effect cannot be part of a SQLite transaction. The
-operation ledger therefore records `PREPARED` before the side effect and
-`APPLIED`, `FAILED`, or `INDETERMINATE` afterward. Recovery never silently
-equates an absent event with an absent side effect.
+An external lifecycle side effect cannot be part of a SQLite transaction. A
+cross-process resource lock serializes attempts, and the operation ledger
+records `PREPARED` plus a durable applying marker before the side effect, then
+`APPLIED`, `FAILED`, or `INDETERMINATE` afterward. A process crash releases the
+resource lock; an abandoned applying marker becomes `INDETERMINATE` and is not
+silently replayed. Recovery never equates an absent event with an absent side
+effect.
 
 ### 3. Transport
 
 Local recording never waits for the broker. A delivery worker asynchronously
-publishes pending events and records positive JetStream PubAck evidence in one
-local transaction.
+publishes pending events and records exact configured-stream JetStream PubAck
+evidence in one local transaction.
 
 Two modes exist with no implicit downgrade:
 
@@ -183,7 +186,8 @@ intermediate states.
 ## Delivery claims
 
 - Local acceptance: exactly one durable local event per idempotency key.
-- Broker delivery: at least once; PubAck proves the stream stored a publish.
+- Broker delivery: at least once; only an exact configured-stream PubAck proves
+  the intended stream stored a publish.
 - Local journal: exactly one canonical row per event identity; conflicting
   duplicates fail closed.
 - External apply: idempotent at least once unless an adapter proves an atomic

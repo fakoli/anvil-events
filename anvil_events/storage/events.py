@@ -61,11 +61,7 @@ class EventRepository:
         encode_js_publish(encoded, event["event_id"])
         existing = connection.execute(
             """
-            SELECT envelope_json, canonical_sha256, producer_state, journaled,
-                   EXISTS(
-                       SELECT 1 FROM quarantine
-                        WHERE quarantine.event_id = events.event_id
-                   ) AS quarantined
+            SELECT envelope_json, canonical_sha256, producer_state, journaled
               FROM events WHERE event_id = ?
             """,
             (event["event_id"],),
@@ -76,10 +72,18 @@ class EventRepository:
                     f"event identity collision for {event['event_id']!r}"
                 )
             if existing["envelope_json"] != encoded:
-                if not existing["quarantined"]:
-                    raise ValueError(
-                        f"event identity collision for {event['event_id']!r}"
-                    )
+                connection.execute(
+                    """
+                    INSERT INTO quarantine(
+                        event_id, raw_json, reason, quarantined_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        event["event_id"], existing["envelope_json"],
+                        "stored envelope healed by canonical redelivery",
+                        time.time(),
+                    ),
+                )
                 connection.execute(
                     """
                     UPDATE events SET envelope_json = ?, canonical_size = ?
