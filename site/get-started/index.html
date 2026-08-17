@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Install anvil-events, create a durable local store, record and inspect an event, then run the isolated development fleet.">
+  <meta name="theme-color" content="#020d1b">
+  <title>Get started — anvil-events</title>
+  <link rel="canonical" href="https://fakoli.github.io/anvil-events/get-started/">
+  <link rel="stylesheet" href="../assets/styles.css?v=0.2.2-docs4">
+  <script src="../assets/site.js?v=0.2.2-docs1" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="site-header"><div class="header-inner">
+    <a class="wordmark" href="../" aria-label="anvil-events home">anvil-events</a>
+    <button class="menu-button" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-navigation" data-menu-button><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+    <nav class="site-nav" id="site-navigation" aria-label="Primary" data-navigation data-open="false">
+      <a href="../">Overview</a><a href="../architecture/">Architecture</a><a href="./" aria-current="page">Get started</a><a href="../deep-dive/">Deep dive</a><a href="https://github.com/fakoli/anvil-events">GitHub <svg class="external-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6" fill="none" stroke="currentColor" stroke-width="2"/></svg></a>
+    </nav>
+  </div></header>
+
+  <main id="content" class="article-layout">
+    <aside class="article-rail" aria-label="On this page"><p class="rail-title">Guide</p><nav><a href="#install" data-article-link aria-current="true">Install</a><a href="#store" data-article-link>Create a store</a><a href="#record" data-article-link>Record an event</a><a href="#status" data-article-link>Inspect status</a><a href="#development" data-article-link>Run a dev node</a><a href="#fleet" data-article-link>Configure a fleet node</a><a href="#operate" data-article-link>Operate safely</a></nav></aside>
+
+    <article class="article-main">
+      <header class="article-header"><h1>Get started</h1><p>Go from an empty directory to a durable local event journal, then exercise the isolated development fleet.</p></header>
+      <div class="article-body">
+        <section id="install">
+          <h2>Local first</h2>
+          <p>Start without a broker. This proves the event envelope, SQLite transaction, idempotency behavior, and inspection tools before network or host policy enters the picture.</p>
+          <div class="callout"><strong>Requirements:</strong> Python 3.11 or newer. The package has no runtime dependencies.</div>
+          <div class="steps">
+            <div class="guide-step"><span class="step-number">1</span><h3>Install the exact release wheel.</h3><div class="code-frame"><button class="copy-button" type="button" data-copy="install-wheel">Copy</button><pre id="install-wheel"><code><span class="prompt">$</span> python -m pip install https://github.com/fakoli/anvil-events/releases/download/v0.2.2/anvil_events-0.2.2-py3-none-any.whl</code></pre></div><p>The v0.2.2 wheel SHA-256 is <code>23aac737604ce97a033e57c5adbf07c9fd0fe4bb8826706bb145a1b0cbca1cf3</code>. The release is hosted on GitHub; there is currently no PyPI distribution.</p></div>
+            <div class="guide-step"><span class="step-number">2</span><h3>Confirm the CLI.</h3><div class="code-frame"><button class="copy-button" type="button" data-copy="cli-help">Copy</button><pre id="cli-help"><code><span class="prompt">$</span> anvil-events --help</code></pre></div></div>
+          </div>
+        </section>
+
+        <section id="store">
+          <h2>Create a store</h2>
+          <p>Global options come before the subcommand. Use a project-local root for this walkthrough so cleanup is obvious.</p>
+          <div class="code-frame"><button class="copy-button" type="button" data-copy="init-store">Copy</button><pre id="init-store"><code><span class="prompt">$</span> anvil-events --root ./demo-events init
+backend: sqlite
+database: .../demo-events/events.db</code></pre></div>
+          <p>SQLite runs in WAL mode. The database owns event identity, pending and archived producer state, subscriber journal state, PubAck evidence, cursors, operation intent, reconciliation attempts, and retention metadata.</p>
+        </section>
+
+        <section id="record">
+          <h2>Record a desired event</h2>
+          <p><code>record</code> reads exactly one JSON object from standard input. It validates and accepts the event locally; it never waits for broker I/O.</p>
+          <h3>PowerShell</h3>
+          <div class="code-frame"><button class="copy-button" type="button" data-copy="record-powershell">Copy</button><pre id="record-powershell"><code>$payload = @'
+{"resource":"routing/clients","generation":1,"revision":"rev-1","content_sha256":"781a9e745454e30551907d683c956be69055528219e5f567a1ba1afe245e2c17","adapter":"router_config","artifact":"routing/clients","targets":["node-b"]}
+'@
+$payload | anvil-events --root ./demo-events record state.desired `
+  --node node-a --producer node-a:router --operation-key demo-routing-1</code></pre></div>
+          <h3>Bash / zsh</h3>
+          <div class="code-frame"><button class="copy-button" type="button" data-copy="record-bash">Copy</button><pre id="record-bash"><code><span class="prompt">$</span> printf '%s\n' '{"resource":"routing/clients","generation":1,"revision":"rev-1","content_sha256":"781a9e745454e30551907d683c956be69055528219e5f567a1ba1afe245e2c17","adapter":"router_config","artifact":"routing/clients","targets":["node-b"]}' \
+  | anvil-events --root ./demo-events record state.desired \
+      --node node-a --producer node-a:router --operation-key demo-routing-1</code></pre></div>
+          <p>The response contains <code>accepted</code>, <code>already_recorded</code>, and the producer-scoped <code>event_id</code>. Run the exact command again: the same idempotency key and intent return the same event with <code>already_recorded: true</code>. Reuse that key for different intent and the transaction fails.</p>
+        </section>
+
+        <section id="status">
+          <h2>Inspect the journal</h2>
+          <div class="code-frame"><button class="copy-button" type="button" data-copy="status-command">Copy</button><pre id="status-command"><code><span class="prompt">$</span> anvil-events --root ./demo-events status --json
+{"archived":0,"backend":"sqlite","cursors":0,"database":".../demo-events/events.db","degraded":true,"facts":0,"journaled":0,"pending":1,"quarantined":0,"schema_version":1,"unresolved_operations":0}
+
+<span class="prompt">$</span> anvil-events --root ./demo-events replay --lines 20
+2026-… node-a:router:000001 state.desired corr=None</code></pre></div>
+          <p><code>pending: 1</code> is expected: no broker has acknowledged the locally accepted event. <code>degraded: true</code> makes that unfinished delivery visible rather than silently discarding it.</p>
+          <h3>Check dependency integrity</h3>
+          <div class="code-frame"><button class="copy-button" type="button" data-copy="verify-command">Copy</button><pre id="verify-command"><code><span class="prompt">$</span> anvil-events verify ./demo-events
+dependency graph: OK (1 events)</code></pre></div>
+          <p>This check covers only explicit <code>causes</code> and producer-order DAG integrity. It does not claim database causal-consistency conformance.</p>
+        </section>
+
+        <section id="development">
+          <h2>Run the isolated development fleet</h2>
+          <p>The checked-in Compose stack builds the exact package, creates and verifies the non-expiring <code>ANVIL_EVENTS</code> stream, starts a synthetic node reconciler, and exposes loopback health. Its broker port is not published to the host.</p>
+          <div class="code-frame"><button class="copy-button" type="button" data-copy="compose-start">Copy</button><pre id="compose-start"><code><span class="prompt">$</span> docker compose -f deploy/compose.yml up -d --build
+<span class="prompt">$</span> docker compose -f deploy/compose.yml ps
+<span class="prompt">$</span> curl http://127.0.0.1:9877/ready</code></pre></div>
+          <p>Record the same sample desired event inside the <code>events</code> container, as shown in the repository README. The synthetic <code>routing/clients</code> adapter resolves the checked-in <code>rev-1</code> artifact, applies it under the mounted volume, verifies the exact bytes, and records an outcome.</p>
+          <div class="callout"><strong>Development only.</strong> This Compose network is intentionally unauthenticated and must not be exposed to a LAN or private overlay network.</div>
+        </section>
+
+        <section id="fleet">
+          <h2>Configure a fleet node</h2>
+          <p>Do this only after the local and Compose paths make sense. Start from <code>deploy/fleet-node.example.toml</code> and keep the real manifest outside the public product repository.</p>
+          <h3>1. Establish broker identity</h3><p>Fleet mode requires a verified <code>tls://</code> endpoint plus authentication. The supplied NATS template demonstrates mTLS identity mapping, node-prefixed publish ACLs, and the consumer API, delivery, inbox, and ACK permissions required by one durable node.</p>
+          <h3>2. Bind authority precisely</h3><p>Set the node and outcome producer, exact allowed producers, artifact source, adapter destination, and <code>authority_producers</code> for every auto-applied resource. A producer allowlist alone never grants apply authority.</p>
+          <h3>3. Pass credentials by reference</h3><p>The service environment contains certificate paths and any token value. TOML may name the relevant environment variable but never stores the value.</p>
+          <h3>4. Start one portable runtime</h3>
+          <div class="code-frame"><button class="copy-button" type="button" data-copy="serve-command">Copy</button><pre id="serve-command"><code><span class="prompt">$</span> anvil-events --root /var/lib/anvil/events serve \
+  --url tls://broker.example.invalid:4222 \
+  --stream ANVIL_EVENTS \
+  --subject 'anvil.events.v2.>' \
+  --durable node-b-events \
+  --config /etc/anvil-events/node.toml</code></pre></div>
+          <p>Use the launchd, systemd, or container wrapper that fits the host. They all execute this same runtime and use a host-durable SQLite root.</p>
+        </section>
+
+        <section id="operate">
+          <h2>Operate safely</h2>
+          <table class="boundary-table"><tbody>
+            <tr><th scope="row"><code>GET /live</code></th><td>Local SQLite is readable and runtime workers are alive.</td></tr>
+            <tr><th scope="row"><code>GET /ready</code></th><td>Liveness plus durable subscriber connectivity and no active pending-delivery error.</td></tr>
+            <tr><th scope="row"><code>GET /</code></th><td>A bounded JSON snapshot including pending work, unresolved operations, broker connection, reconciliation enablement, and last errors.</td></tr>
+          </tbody></table>
+          <p>Readiness is not application acceptance. A real rollout still needs the desired revision, exact observed destination, correlated outcome, client reload/health evidence, broker-loss catch-up, and a tested rollback.</p>
+          <h3>Before enabling a service</h3>
+          <ul><li>Install an exact reviewed wheel and verify its digest.</li><li>Initialize the store as the service user.</li><li>Validate the private manifest without changing an active destination.</li><li>Create or exactly verify the stream with a separate administrative principal.</li><li>Prove pending status while the broker is offline, then reconnect and catch up.</li><li>Preview every adapter and retain a rollback copy.</li><li>Stage one non-authoritative canary before the rest of the fleet.</li></ul>
+          <a class="next-link" href="../deep-dive/"><span>Understand the failure contract<strong>Deep dive</strong></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2"/></svg></a>
+        </section>
+      </div>
+    </article>
+  </main>
+
+  <footer class="site-footer"><div class="footer-inner"><span>Local acceptance first · Fleet deployment is a separate operator gate</span><nav aria-label="Footer"><a href="https://github.com/fakoli/anvil-events/releases/tag/v0.2.2">v0.2.2</a><a href="https://github.com/fakoli/anvil-events/tree/main/deploy">Deploy templates</a><a href="https://github.com/fakoli/anvil-events">Source</a></nav></div></footer>
+</body>
+</html>

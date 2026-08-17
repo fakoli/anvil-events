@@ -1,5 +1,10 @@
 # anvil-events
 
+[Documentation](https://fakoli.github.io/anvil-events/) ·
+[Architecture](https://fakoli.github.io/anvil-events/architecture/) ·
+[Get started](https://fakoli.github.io/anvil-events/get-started/) ·
+[Deep dive](https://fakoli.github.io/anvil-events/deep-dive/)
+
 `anvil-events` is a stdlib-only desired-state convergence agent for small,
 heterogeneous fleets. An authority records an immutable desired revision once;
 each node catches up, updates only the resource it owns, verifies the result,
@@ -12,12 +17,14 @@ deployment repository.
 
 ## Status
 
-Version 0.2 is a source redesign and is **not deployed**. The composable core,
-SQLite store, secured NATS client, managed-file reconciler, migration path, and
-130 hermetic tests run natively on Windows and Linux. Clean container probes
-also prove exact apply, broker-outage catch-up, mTLS identity mapping, and
-negative cross-node ACLs. Exact-head CI passes on Windows, macOS, and Linux;
-live fleet acceptance remains a separate private deployment gate.
+Version 0.2.2 is released and has completed staged acceptance on the private
+reference fleet. The composable core, SQLite store, secured NATS client,
+reconcilers, migration path, and 165 hermetic tests run natively across the
+supported CI matrix. Container probes cover exact apply and broker-outage
+catch-up; secured-broker probes cover mTLS identity mapping and negative
+cross-node ACLs. Real identities, routes, manifests, rollback paths, and raw
+acceptance evidence remain private. A source merge or successful public test is
+still not deployment authorization for another fleet.
 
 The prior 0.1 implementation is assessed in
 [`docs/assessment/2026-08-16-baseline-assessment.md`](docs/assessment/2026-08-16-baseline-assessment.md).
