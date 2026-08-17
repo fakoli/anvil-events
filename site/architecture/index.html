@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="The anvil-events architecture: domain, SQLite journal, secure JetStream transport, reconciliation adapters, and recovery boundaries.">
+  <meta name="theme-color" content="#020d1b">
+  <title>Architecture — anvil-events</title>
+  <link rel="canonical" href="https://fakoli.github.io/anvil-events/architecture/">
+  <link rel="stylesheet" href="../assets/styles.css?v=0.2.2-docs4">
+  <script src="../assets/site.js?v=0.2.2-docs1" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="site-header"><div class="header-inner">
+    <a class="wordmark" href="../" aria-label="anvil-events home">anvil-events</a>
+    <button class="menu-button" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-navigation" data-menu-button><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+    <nav class="site-nav" id="site-navigation" aria-label="Primary" data-navigation data-open="false">
+      <a href="../">Overview</a><a href="./" aria-current="page">Architecture</a><a href="../get-started/">Get started</a><a href="../deep-dive/">Deep dive</a><a href="https://github.com/fakoli/anvil-events">GitHub <svg class="external-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6" fill="none" stroke="currentColor" stroke-width="2"/></svg></a>
+    </nav>
+  </div></header>
+
+  <main id="content" class="article-layout">
+    <aside class="article-rail" aria-label="On this page">
+      <p class="rail-title">Table of contents</p>
+      <nav><a href="#mental-model" data-article-link aria-current="true">Mental model</a><a href="#data-flow" data-article-link>Data flow</a><a href="#components" data-article-link>Components</a><a href="#consistency" data-article-link>Consistency model</a><a href="#recovery" data-article-link>Failure recovery</a><a href="#security" data-article-link>Security boundaries</a><a href="#deployment" data-article-link>Deployment</a></nav>
+    </aside>
+
+    <article class="article-main">
+      <header class="article-header"><h1>Architecture</h1><p>anvil-events separates immutable history from desired-state convergence.</p></header>
+      <div class="article-body">
+        <section id="mental-model">
+          <h2>Mental model</h2>
+          <p>An authority does not send a command to a host. It records an immutable <code>state.desired</code> event that names a resource generation and the exact bytes that generation represents. The broker retains the event. Each subscribed node makes a local decision—using its own manifest, policy, adapter, and credentials—then records what happened.</p>
+          <div class="callout"><strong>Intent crosses the network. Capability does not.</strong> Events can name logical resources and immutable artifacts. They cannot choose local paths, executables, argument prefixes, secrets, or network endpoints.</div>
+          <p>This split keeps the public product generic. A portable node configuration describes adapter shapes with synthetic identities; real topology and authority bindings stay in an operator-owned private deployment repository.</p>
+
+          <div class="architecture-flow" aria-label="High-level event flow">
+            <div class="flow-node"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M9 38h30M13 34V17h22v17M9 17h30L24 8 9 17Z" fill="none" stroke="currentColor" stroke-width="2.5"/></svg>Authority</div><div class="flow-arrow">→</div>
+            <div class="flow-node active"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M8 13h32v22H8zM15 13v22M24 13v22M33 13v22" fill="none" stroke="currentColor" stroke-width="2.5"/></svg>NATS JetStream</div><div class="flow-arrow">→</div>
+            <div class="flow-node"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M9 12h30v24H9zM16 20h16M16 27h12" fill="none" stroke="currentColor" stroke-width="2.5"/></svg>Subscriber</div><div class="flow-arrow">→</div>
+            <div class="flow-node"><svg viewBox="0 0 48 48" aria-hidden="true"><ellipse cx="24" cy="12" rx="14" ry="6" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M10 12v22c0 3 6 6 14 6s14-3 14-6V12M10 23c0 3 6 6 14 6s14-3 14-6" fill="none" stroke="currentColor" stroke-width="2.5"/></svg>SQLite journal</div>
+          </div>
+        </section>
+
+        <section id="data-flow">
+          <h2>Data flow</h2>
+          <ol>
+            <li><strong>Accept locally.</strong> <code>record</code> validates the v2 payload and commits the idempotency key, operation row, producer sequence, canonical envelope, and pending-delivery state in one SQLite transaction.</li>
+            <li><strong>Publish asynchronously.</strong> The delivery pump scans indexed pending rows, publishes with <code>Nats-Msg-Id=event_id</code>, and accepts completion only from a positive PubAck naming the configured stream.</li>
+            <li><strong>Pull durably.</strong> Each node binds a named JetStream durable consumer. Disconnection leaves unacknowledged messages available for redelivery.</li>
+            <li><strong>Validate before journaling.</strong> The subscriber checks the envelope, producer allowlist, actual broker subject, and canonical identity. Invalid input is dropped without entering reconciliation.</li>
+            <li><strong>Journal before processing.</strong> A valid delivery is appended idempotently to the local SQLite journal before any adapter runs.</li>
+            <li><strong>Claim one generation.</strong> A cross-process resource lock and a transactional reconcile claim serialize one resource. Lower generations are superseded; conflicting reuse fails closed.</li>
+            <li><strong>Resolve and preview.</strong> The node loads the manifest-selected adapter and exact artifact, verifies revision and SHA-256, then creates a bounded preview.</li>
+            <li><strong>Apply under policy.</strong> Automatic apply requires the exact <code>(authority producer, resource, adapter)</code> binding. Otherwise the delivery stays unacknowledged as awaiting approval.</li>
+            <li><strong>Verify, classify, report.</strong> Verified state records <code>reconcile.applied</code>. Verification failure attempts rollback. An apply exception becomes indeterminate. The correlated outcome is itself durably recorded for delivery.</li>
+            <li><strong>ACK last.</strong> The subscriber acknowledges the broker message only after durable local processing has reached a classified result.</li>
+          </ol>
+        </section>
+
+        <section id="components">
+          <h2>The four boundaries</h2>
+          <table class="boundary-table"><tbody>
+            <tr><th scope="row">Domain</th><td><code>domain_v2.py</code> defines canonical JSON envelopes, producer-scoped identity, resource generations, bounded payloads, and the desired/outcome vocabulary. V1 remains readable only for migration.</td></tr>
+            <tr><th scope="row">Storage</th><td><code>storage/</code> composes focused repositories over one SQLite database: events, delivery evidence, operation intent, reconcile attempts, queries, facts, retention, and fail-closed legacy import.</td></tr>
+            <tr><th scope="row">Transport</th><td><code>transport/</code> implements the NATS wire contract directly with the standard library: framing, JetStream APIs, verified TLS, authentication, endpoint policy, PubAck parsing, and subject validation.</td></tr>
+            <tr><th scope="row">Reconciliation</th><td><code>reconciliation/</code> owns artifact resolution, adapter and policy protocols, generation state, cross-process locking, and preview/apply/verify/rollback orchestration.</td></tr>
+          </tbody></table>
+
+          <h3>Runtime composition</h3>
+          <p><code>EventsService</code> is the composition root. It opens the store, optionally loads a node reconciler, starts the subscriber and delivery pump, and exposes bounded loopback health. Native services and the container execute this same code path.</p>
+
+          <h3>Built-in adapters</h3>
+          <ul>
+            <li><strong>Managed file:</strong> atomically owns and replaces one complete secret-free file.</li>
+            <li><strong>JSON merge:</strong> applies an RFC 7396-style object patch while preserving unmentioned fields and rejecting protected or credential-shaped paths.</li>
+            <li><strong>Command config:</strong> invokes one manifest-fixed executable with argv only. Events may provide values only for an explicit non-secret key allowlist.</li>
+          </ul>
+        </section>
+
+        <section id="consistency">
+          <h2>Consistency model</h2>
+          <p>anvil-events deliberately has no fleet-global clock. Two scoped orders are sufficient:</p>
+          <ul><li><code>producer_seq</code> identifies program order for one producer.</li><li><code>generation</code> orders desired state for one logical resource authority.</li></ul>
+          <p>Unrelated resources may be observed in different orders on different nodes. For one resource, a node applies only a generation greater than its durable observed generation. The same identity or generation with different canonical content is equivocation and aborts.</p>
+          <div class="callout"><strong>Timestamps are diagnostics.</strong> They never decide authorization, generation precedence, or whether an adapter may apply.</div>
+        </section>
+
+        <section id="recovery">
+          <h2>Failure recovery</h2>
+          <h3>Producer offline</h3><p>The event remains pending in SQLite. The delivery pump retries with bounded backoff. A later matching PubAck atomically records broker evidence and advances the producer cursor.</p>
+          <h3>Consumer offline</h3><p>JetStream retains history indefinitely by default. The durable consumer resumes unacknowledged delivery when the node returns, including nodes enrolled after the desired event was published.</p>
+          <h3>Poison local data</h3><p>Malformed or non-canonical pending rows are quarantined, removed from delivery work, and surfaced through a journal-only degradation event. They cannot block the rest of the queue silently.</p>
+          <h3>Crash during apply</h3><p>A durable applying row exists before the external side effect. If startup finds it abandoned, the attempt becomes <code>INDETERMINATE</code> and requires explicit operator recovery. Startup also re-verifies previously applied resources and repairs drift when the exact desired artifact still resolves.</p>
+        </section>
+
+        <section id="security">
+          <h2>Security boundaries</h2>
+          <ul>
+            <li><strong>Fleet transport cannot downgrade:</strong> fleet mode requires <code>tls://</code>, server-name verification, and authentication. Plaintext is restricted to loopback development boundaries.</li>
+            <li><strong>Identity is layered:</strong> broker ACLs bind a principal to a subject prefix; the envelope producer must belong to its node; the subscriber checks the actual broker subject against the envelope subject.</li>
+            <li><strong>Desired payloads are inert:</strong> credential-shaped keys, URLs, unsafe identifiers, and oversized or deeply nested JSON are rejected.</li>
+            <li><strong>Artifact access is explicit:</strong> the optional publisher is authenticated, read-only, loopback-only HTTP intended to sit behind separately managed private HTTPS ingress.</li>
+            <li><strong>Health is narrow:</strong> <code>/live</code> proves local store/workers, and <code>/ready</code> adds broker connectivity. Neither proves an external application accepted or reloaded configuration.</li>
+          </ul>
+        </section>
+
+        <section id="deployment">
+          <h2>One artifact, two runtimes</h2>
+          <p>The package exposes one <code>serve</code> runtime. Portable templates wrap it as a macOS launchd daemon, Linux systemd unit, or a thin container. The SQLite root remains host-durable in every shape.</p>
+          <p>Public deployment files are examples, not topology. Installation, real manifests, credentials, service selection, rollout, and live acceptance are separate operator actions.</p>
+          <a class="next-link" href="../get-started/"><span>Run it locally first<strong>Get started</strong></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2"/></svg></a>
+        </section>
+      </div>
+    </article>
+  </main>
+
+  <footer class="site-footer"><div class="footer-inner"><span>anvil-events v0.2.2 · Architecture follows ADR-0003</span><nav aria-label="Footer"><a href="https://github.com/fakoli/anvil-events/blob/main/docs/adr/0003-fleet-convergence-architecture.md">ADR-0003</a><a href="https://github.com/fakoli/anvil-events/blob/main/docs/invariants.md">Invariants</a><a href="https://github.com/fakoli/anvil-events">Source</a></nav></div></footer>
+</body>
+</html>

@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A deep technical guide to anvil-events identity, ordering, delivery, reconciliation, failure recovery, security, and research boundaries.">
+  <meta name="theme-color" content="#020d1b">
+  <title>Deep dive — anvil-events</title>
+  <link rel="canonical" href="https://fakoli.github.io/anvil-events/deep-dive/">
+  <link rel="stylesheet" href="../assets/styles.css?v=0.2.2-docs4">
+  <script src="../assets/site.js?v=0.2.2-docs1" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="site-header"><div class="header-inner">
+    <a class="wordmark" href="../" aria-label="anvil-events home">anvil-events</a>
+    <button class="menu-button" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-navigation" data-menu-button><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+    <nav class="site-nav" id="site-navigation" aria-label="Primary" data-navigation data-open="false">
+      <a href="../">Overview</a><a href="../architecture/">Architecture</a><a href="../get-started/">Get started</a><a href="./" aria-current="page">Deep dive</a><a href="https://github.com/fakoli/anvil-events">GitHub <svg class="external-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6" fill="none" stroke="currentColor" stroke-width="2"/></svg></a>
+    </nav>
+  </div></header>
+
+  <main id="content" class="article-layout">
+    <aside class="article-rail" aria-label="On this page"><p class="rail-title">Deep dive</p><nav><a href="#identity" data-article-link aria-current="true">Event identity</a><a href="#ordering" data-article-link>Ordering</a><a href="#delivery" data-article-link>Delivery semantics</a><a href="#reconciliation" data-article-link>Reconciliation</a><a href="#recovery" data-article-link>Failure recovery</a><a href="#security" data-article-link>Security</a><a href="#invariants" data-article-link>Invariants</a><a href="#research" data-article-link>Research map</a></nav></aside>
+
+    <article class="article-main">
+      <header class="article-header"><h1>Deep dive</h1><p>The guarantees are narrow on purpose—and explicit about where they stop.</p></header>
+      <div class="article-body">
+        <section id="identity">
+          <h2>Event identity</h2>
+          <p>A v2 envelope is canonical JSON with an exact field set. Its identity is producer-scoped: <code>event_id = producer + zero-padded producer_seq</code>. The subject is derived from the envelope node and kind. The producer’s first token must equal the node.</p>
+          <div class="code-frame"><button class="copy-button" type="button" data-copy="envelope-example">Copy</button><pre id="envelope-example"><code>{
+  <span class="code-key">"version"</span>: 2,
+  <span class="code-key">"event_id"</span>: "node-a:router:000123",
+  <span class="code-key">"producer"</span>: "node-a:router",
+  <span class="code-key">"producer_seq"</span>: 123,
+  <span class="code-key">"node"</span>: "node-a",
+  <span class="code-key">"kind"</span>: "state.desired",
+  <span class="code-key">"subject"</span>: "anvil.events.v2.node-a.state.desired",
+  <span class="code-key">"payload"</span>: {
+    "resource": "routing/clients",
+    "generation": 42,
+    "revision": "immutable-revision",
+    "content_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "adapter": "router_config",
+    "artifact": "routing/clients"
+  },
+  <span class="code-key">"causes"</span>: []
+}</code></pre></div>
+          <p>The complete envelope also includes RFC 3339 <code>observed_at</code> and <code>emitted_at</code>, a nullable <code>correlation_id</code>, and the exact v2 schema URI. A duplicate identity is accepted only when its canonical envelope is byte-for-byte equivalent. Any conflicting identity aborts the transaction.</p>
+          <h3>Local acceptance transaction</h3>
+          <p><code>OperationLedger.record</code> binds the operation ID, idempotency key, producer, kind, correlation, intent, next producer sequence, canonical event, and pending state in one immediate SQLite transaction. This is the strongest “exactly one” boundary in the system: one local canonical event per idempotency key and intent.</p>
+        </section>
+
+        <section id="ordering">
+          <h2>Ordering without a global clock</h2>
+          <p>Wall-clock timestamps describe observations; they do not decide correctness. The implementation uses two explicit orders:</p>
+          <table class="boundary-table"><tbody><tr><th scope="row"><code>producer_seq</code></th><td>Monotonic identity and program order for events emitted by one producer.</td></tr><tr><th scope="row"><code>generation</code></th><td>Monotonic desired-state order for one logical resource authority.</td></tr></tbody></table>
+          <p>Nodes may see unrelated resources in different orders. That does not prevent convergence. For one node and resource, the reconcile state records the generation owner. Lower generations are superseded; the same generation may not change revision, digest, adapter, or artifact.</p>
+          <div class="callout"><strong>No fleet-global sequence.</strong> Adding consensus or a universal sequencer would solve a problem this system does not have and would not make external side effects exactly once.</div>
+        </section>
+
+        <section id="delivery">
+          <h2>Delivery semantics</h2>
+          <div class="sequence" aria-label="Publish and reconcile sequence">
+            <div class="sequence-step"><span class="sequence-number">1</span><strong>Publish</strong><p>Send canonical event with message ID.</p></div>
+            <div class="sequence-step"><span class="sequence-number">2</span><strong>PubAck</strong><p>Configured stream proves broker storage.</p></div>
+            <div class="sequence-step"><span class="sequence-number">3</span><strong>Durable pull</strong><p>Node receives or redelivers.</p></div>
+            <div class="sequence-step"><span class="sequence-number">4</span><strong>Journal</strong><p>Append locally before processing.</p></div>
+            <div class="sequence-step"><span class="sequence-number">5</span><strong>Apply</strong><p>Run one bounded adapter attempt.</p></div>
+            <div class="sequence-step"><span class="sequence-number">6</span><strong>Verify</strong><p>Classify and record outcome.</p></div>
+            <div class="sequence-step"><span class="sequence-number">7</span><strong>ACK</strong><p>Acknowledge durable processing.</p></div>
+          </div>
+
+          <div class="limit-grid">
+            <div class="limit-column"><h3>What is guaranteed</h3><ul><li>Local event acceptance is durable and idempotent.</li><li>A pending publish completes only after exact-stream PubAck evidence.</li><li>Broker and subscriber delivery are at least once.</li><li>The local journal stores one canonical row per event identity.</li><li>Subscriber ACK follows durable local processing.</li></ul></div>
+            <div class="limit-column negative"><h3>What is not guaranteed</h3><ul><li>No globally exactly-once external side effect.</li><li>No total order across independent producers or resources.</li><li>No fixed delivery latency during faults.</li><li>No automatic replay of an unclassifiable apply.</li><li>No application acceptance inferred from daemon readiness.</li></ul></div>
+          </div>
+
+          <h3>Why PubAck is narrow</h3><p>A positive PubAck proves that the configured JetStream stored a publish at a broker sequence. It does not prove a node consumed the event, an adapter applied it, an application reloaded, or the fleet converged. Those facts require later journal, reconcile, observed-state, and outcome evidence.</p>
+        </section>
+
+        <section id="reconciliation">
+          <h2>Reconciliation state machine</h2>
+          <div class="state-machine" aria-label="Reconciliation happy path"><div class="state">PREPARED</div><div class="state-arrow">→</div><div class="state">PREVIEWED</div><div class="state-arrow">→</div><div class="state">APPLYING</div><div class="state-arrow">→</div><div class="state">APPLIED</div></div>
+          <p>The durable attempt starts as <code>PREPARED</code>. Preview is stored before policy is evaluated. A denied exact binding becomes <code>AWAITING_APPROVAL</code> and the broker delivery remains unacknowledged. Before calling the external adapter, the engine writes a separate applying marker while holding the cross-process resource lock.</p>
+          <p>After apply:</p>
+          <ul><li>A successful <code>verify</code> records the resource generation and <code>APPLIED</code>.</li><li>A false or failing verification attempts rollback and records <code>FAILED</code>.</li><li>An apply exception records <code>INDETERMINATE</code>, because the external side effect may have occurred before the error became visible.</li><li>A previously applied event is re-verified on startup. Detected drift reopens the same attempt and reapplies the exact artifact.</li></ul>
+          <h3>Duplicate delivery is not duplicate apply</h3><p>Redelivery of the same event reuses its deterministic reconcile operation. A distinct but equivalent desired event gets its own correlated outcome, while the already-owned generation is re-verified rather than blindly applied again.</p>
+        </section>
+
+        <section id="recovery">
+          <h2>Failure recovery</h2>
+          <table class="boundary-table"><tbody>
+            <tr><th scope="row">Broker unavailable</th><td>Local record succeeds; pending delivery remains visible; the delivery pump reconnects and publishes later.</td></tr>
+            <tr><th scope="row">Publisher disconnects after send</th><td>The event remains eligible. JetStream message-ID deduplication and idempotent PubAck recording handle retry without changing event identity.</td></tr>
+            <tr><th scope="row">Node offline</th><td>The durable stream retains history. On return, the node resumes from its durable consumer and evaluates the latest resource generations.</td></tr>
+            <tr><th scope="row">Invalid broker message</th><td>The subscriber drops it without journaling or reconciling. Subject/body mismatch is invalid even when the envelope itself parses.</td></tr>
+            <tr><th scope="row">Invalid local pending row</th><td>Repair quarantines it, removes its pending role, marks a linked operation indeterminate, and writes a local degradation audit.</td></tr>
+            <tr><th scope="row">Crash during apply</th><td>Startup finds the durable applying marker and classifies the attempt indeterminate. No automatic second apply occurs.</td></tr>
+            <tr><th scope="row">Observed drift after restart</th><td>Startup resolves the exact desired artifact, verifies local state, and reopens/reconciles the existing applied generation when needed.</td></tr>
+          </tbody></table>
+        </section>
+
+        <section id="security">
+          <h2>Security model</h2>
+          <h3>Transport cannot silently downgrade</h3><p>Development plaintext is limited to literal loopback or a separately allowlisted single-label container host. Fleet mode requires a verified TLS endpoint plus username/password or mTLS. Standard INFO-then-TLS and explicit TLS-first are distinct, tested handshakes.</p>
+          <h3>Authentication is not authorization</h3><p>A node certificate or broker user establishes a principal. Broker ACLs restrict the subject prefix. Envelope validation binds the producer to its node. The node manifest separately decides whether that producer may automatically apply one resource through one adapter.</p>
+          <h3>Events are capability-free</h3><p>Payload validation rejects credential-shaped keys and URLs. Resource, revision, adapter, and artifact names are bounded portable identifiers. Adapters obtain destinations and executable structure only from local configuration.</p>
+          <h3>Artifact bytes are part of intent</h3><p>A resolver must return the requested immutable revision. The engine verifies its canonical SHA-256 before preview or apply. HTTP resolution is authenticated, HTTPS-only in fleet mode, rejects redirects, and pins local file access through opened parent directories.</p>
+        </section>
+
+        <section id="invariants">
+          <h2>Twelve executable invariants</h2>
+          <p>These are implementation properties with hermetic regressions and separate external gates where a broker, TLS policy, or real application is involved.</p>
+          <div class="invariant-list">
+            <div class="invariant"><strong>Immutable event identity</strong><p>One event ID and producer sequence identify one canonical envelope; conflict aborts.</p></div>
+            <div class="invariant"><strong>Atomic local acceptance</strong><p>Idempotency, intent, producer sequence, operation, and pending event commit together.</p></div>
+            <div class="invariant"><strong>PubAck gates completion</strong><p>Only valid evidence from the configured stream can archive known pending work and advance its cursor.</p></div>
+            <div class="invariant"><strong>Poison data is visible</strong><p>Corrupt pending state is quarantined and audited; invalid broker input never enters the journal.</p></div>
+            <div class="invariant"><strong>Generation cannot equivocate</strong><p>One node/resource generation has one desired owner; lower or conflicting generations cannot apply.</p></div>
+            <div class="invariant"><strong>Events carry no authority</strong><p>Local manifests own paths, origins, credentials, commands, validation, and exact policy bindings.</p></div>
+            <div class="invariant"><strong>Apply is classified</strong><p>A resource lock serializes the attempt; verification gates applied state; ambiguous external effects remain indeterminate.</p></div>
+            <div class="invariant"><strong>ACK follows processing</strong><p>Storage or processor failure remains unacknowledged; awaiting approval can be redelivered after policy changes.</p></div>
+            <div class="invariant"><strong>No transport downgrade</strong><p>Fleet endpoints require verified TLS and authentication; subject integrity is checked end to end.</p></div>
+            <div class="invariant"><strong>Migration is non-destructive</strong><p>Strict locked snapshots import transactionally; malformed or changing legacy sources roll back and remain intact.</p></div>
+            <div class="invariant"><strong>Dependency claims are narrow</strong><p><code>verify</code> checks only explicit-cause and producer-order graph integrity.</p></div>
+            <div class="invariant"><strong>Recovery history persists</strong><p>The default stream does not expire desired history before a tested snapshot/compaction path exists.</p></div>
+          </div>
+        </section>
+
+        <section id="research">
+          <h2>Research-to-design map</h2>
+          <p>The papers shaped the questions and boundaries. They are not cited as proofs that this implementation inherits their guarantees.</p>
+          <div class="research-list">
+            <div class="research-item"><strong>LogPlayer</strong><p>Contributes the separation of safety, recovery, target state, and liveness. anvil-events uses JetStream recovery and durable generation state; it does not reproduce LogPlayer’s indexed-WAL algorithm or claim globally exactly-once apply.</p></div>
+            <div class="research-item"><strong>Delivery, consistency, determinism</strong><p>Motivates stating delivery, consistency, deterministic replay decisions, and external nondeterminism as separate axes rather than compressing them into “exactly once.”</p></div>
+            <div class="research-item"><strong>Checking causal consistency</strong><p>Motivates precise history models and bad-pattern checks. The product keeps only a dependency-DAG checker; it lacks the read/write object semantics required for causal-consistency conformance.</p></div>
+            <div class="research-item"><strong>Lamport’s Arrow of Time</strong><p>Supports the design instinct to avoid treating physical timestamps as universal order. It is context, not a correctness proof; the implementation’s scoped sequence and generation rules stand on their own tests.</p></div>
+          </div>
+          <a class="next-link" href="https://github.com/fakoli/anvil-events/blob/main/research/2026-08-12-theory-map.md"><span>Read the audited source map<strong>Research notes</strong></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2"/></svg></a>
+        </section>
+      </div>
+    </article>
+  </main>
+
+  <footer class="site-footer"><div class="footer-inner"><span>Claims stop where the evidence stops.</span><nav aria-label="Footer"><a href="https://github.com/fakoli/anvil-events/blob/main/docs/invariants.md">Executable invariants</a><a href="https://github.com/fakoli/anvil-events/tree/main/research">Research</a><a href="https://github.com/fakoli/anvil-events">Source</a></nav></div></footer>
+</body>
+</html>
